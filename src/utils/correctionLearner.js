@@ -149,6 +149,18 @@ function findSubstitutions(origWords, editedWords) {
  * @returns {string[]} Array of corrected words to add to the dictionary
  */
 function extractCorrections(originalText, fieldValue, existingDictionary) {
+  return extractCorrectionPairs(originalText, fieldValue, existingDictionary).map(
+    (pair) => pair.corrected
+  );
+}
+
+/**
+ * Like extractCorrections, but keeps what the transcript had for each corrected
+ * word, so the caller can offer "heard as" aliases alongside the spelling.
+ *
+ * @returns {{ heard: string, corrected: string }[]}
+ */
+function extractCorrectionPairs(originalText, fieldValue, existingDictionary) {
   if (!originalText || !fieldValue) return [];
   if (originalText === fieldValue) return [];
 
@@ -184,11 +196,11 @@ function extractCorrections(originalText, fieldValue, existingDictionary) {
     const maxLen = Math.max(origWord.length, correctedWord.length);
     if (dist / maxLen > 0.65) continue;
 
-    results.push(correctedWord);
+    results.push({ heard: origWord, corrected: correctedWord });
     seenCorrections.add(normalizedCorrected);
   }
 
   return results;
 }
 
-module.exports = { extractCorrections };
+module.exports = { extractCorrections, extractCorrectionPairs };

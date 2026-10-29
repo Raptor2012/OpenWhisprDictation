@@ -66,7 +66,7 @@ test("dictionary-echo silence keeps the recording but shares the settled outcome
   assert.deepEqual(saved, [{ message: "No audio detected", code: DICTIONARY_ECHO_CODE }]);
 });
 
-test("Cloud finding no speech is the no-audio outcome and keeps the recording", async (t) => {
+test("a stale cloud selection is rejected before any audio is uploaded", async (t) => {
   const AudioManager = await loadManagerClass(t, {
     useLocalWhisper: false,
     cloudTranscriptionMode: "openwhispr",
@@ -77,9 +77,21 @@ test("Cloud finding no speech is the no-audio outcome and keeps the recording", 
     code: "NO_SPEECH_DETECTED",
   });
   const { manager, order, saved } = createManager(AudioManager, failure);
+  let uploads = 0;
+  manager.processWithOpenWhisprCloud = async () => {
+    uploads++;
+    throw failure;
+  };
 
   await manager.processAudio({ size: 256, type: "audio/webm" });
 
-  assert.deepEqual(order, ["idle", "no-audio"]);
-  assert.deepEqual(saved, [{ message: "No speech detected in audio", code: "NO_SPEECH_DETECTED" }]);
+  assert.equal(uploads, 0);
+  assert.equal(manager.isProcessing, false);
+  assert.deepEqual(order, ["error", "idle"]);
+  assert.deepEqual(saved, [
+    {
+      message: "Local transcription is required. Select an installed local model.",
+      code: null,
+    },
+  ]);
 });

@@ -1259,13 +1259,14 @@ class ClipboardManager {
   }
 
   async pasteWindows(originalClipboard, options = {}) {
-    const fastPastePath = this.resolveWindowsFastPasteBinary();
-
-    if (fastPastePath) {
-      return this.pasteWithFastPaste(fastPastePath, originalClipboard, options);
-    }
-
-    return this.pasteWithNircmdOrPowerShell(originalClipboard, options);
+    const declined = { pasted: false, reason: "target-unverified", restoreComplete: Promise.resolve() };
+    const binary = this.resolveWindowsFastPasteBinary();
+    if (!binary || !options.targetWindow) return declined;
+    try {
+      const capability = spawnSync(binary, ["--capabilities"], { windowsHide: true, timeout: 2000, encoding: "utf8" });
+      if (capability.status !== 0 || !String(capability.stdout).includes("safe-paste-v1")) return declined;
+    } catch { return declined; }
+    return this.pasteWithFastPaste(binary, originalClipboard, { ...options, safePaste: true });
   }
 
   async pasteWithFastPaste(fastPastePath, originalClipboard, options = {}) {
@@ -1281,6 +1282,7 @@ class ClipboardManager {
         // and pastes into the current foreground — the pre-fix behavior.
         const args =
           options.targetWindow != null ? ["--restore-window", String(options.targetWindow)] : [];
+        if (options.safePaste) args.push("--safe-paste");
 
         this.safeLog("⚡ Windows fast-paste starting", { targetWindow: options.targetWindow });
 
@@ -1322,6 +1324,8 @@ class ClipboardManager {
             } else {
               resolve({ restoreComplete: Promise.resolve() });
             }
+          } else if (options.safePaste) {
+            resolve({ pasted: false, reason: "target-unverified", restoreComplete: Promise.resolve() });
           } else {
             this.safeLog(
               `❌ Windows fast-paste failed (code ${code}), falling back to nircmd/PowerShell`,
@@ -1336,6 +1340,10 @@ class ClipboardManager {
         pasteProcess.on("error", (error) => {
           if (hasTimedOut) return;
           clearTimeout(timeoutId);
+          if (options.safePaste) {
+            resolve({ pasted: false, reason: "target-unverified", restoreComplete: Promise.resolve() });
+            return;
+          }
           this.safeLog("❌ Windows fast-paste error, falling back to nircmd/PowerShell", {
             elapsedMs: Date.now() - startTime,
             error: error.message,
@@ -1348,7 +1356,11 @@ class ClipboardManager {
           this.safeLog("⏱️ Windows fast-paste timeout, falling back to nircmd/PowerShell");
           killProcess(pasteProcess, "SIGKILL");
           pasteProcess.removeAllListeners();
-          this.pasteWithNircmdOrPowerShell(originalClipboard, options).then(resolve).catch(reject);
+          if (options.safePaste) {
+            resolve({ pasted: false, reason: "target-unverified", restoreComplete: Promise.resolve() });
+          } else {
+            this.pasteWithNircmdOrPowerShell(originalClipboard, options).then(resolve).catch(reject);
+          }
         }, 2000);
       }, PASTE_DELAYS.win32_fast);
     });

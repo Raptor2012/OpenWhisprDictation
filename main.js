@@ -1,3 +1,6 @@
+const localNetworkBoundary = require("./src/helpers/localNetworkBoundary");
+localNetworkBoundary.installNodeBoundary();
+
 // Chromium picks the display backend before JS runs, so appendSwitch is too
 // late — the flag has to come from a relaunch.
 const { XWAYLAND_FLAG, shouldForceXWayland } = require("./src/helpers/xwayland");
@@ -49,7 +52,7 @@ const DEFAULT_OAUTH_PROTOCOL_BY_CHANNEL = {
   staging: "openwhispr-staging",
   production: "openwhispr",
 };
-const BASE_WINDOWS_APP_ID = "com.gizmolabs.openwhispr";
+const BASE_WINDOWS_APP_ID = "com.openwhispr.dictation";
 const DEFAULT_AUTH_BRIDGE_PORT = 5199;
 
 function isElectronBinaryExec() {
@@ -83,16 +86,9 @@ function resolveAppChannel() {
 const APP_CHANNEL = resolveAppChannel();
 process.env.OPENWHISPR_CHANNEL = APP_CHANNEL;
 
-function configureChannelUserDataPath() {
-  if (APP_CHANNEL === "production") {
-    return;
-  }
-
-  const isolatedPath = path.join(app.getPath("appData"), `OpenWhispr-${APP_CHANNEL}`);
-  app.setPath("userData", isolatedPath);
-}
-
-configureChannelUserDataPath();
+// Keep this derivative's settings and instance lock separate from OpenWhispr.
+app.setName("OpenWhispr Dictation");
+app.setPath("userData", path.join(app.getPath("appData"), "OpenWhisprDictation"));
 
 // Load userData .env (contains DICTATION_KEY, API keys, etc.) early — before
 // hotkey registration, which needs DICTATION_KEY before the renderer loads.
@@ -100,6 +96,15 @@ require("dotenv").config({
   path: path.join(app.getPath("userData"), ".env"),
   override: false,
 });
+// Warm the installed local models without depending on the original app's settings.
+process.env.LOCAL_TRANSCRIPTION_PROVIDER ||= "nvidia";
+process.env.PARAKEET_MODEL ||= "parakeet-unified-en-0.6b";
+// Measured on the user's recordings: 8 intra-op threads decode fastest on a
+// 16+ core CPU (4 is upstream's cap; 12+ oversubscribes the P-cores).
+if ((require("os").availableParallelism?.() ?? 0) >= 16) process.env.OPENWHISPR_ASR_THREADS ||= "8";
+process.env.CLEANUP_PROVIDER ||= "local";
+process.env.LOCAL_CLEANUP_MODEL ||= "gemma-4-e4b-it-qat-q4_0";
+
 
 // Chromium's Windows-only occlusion tracker misclassifies the always-on-top
 // transparent pill as occluded, throttling its renderer and jittering animations.
@@ -247,15 +252,9 @@ function registerOpenWhisprProtocol() {
 // since it returns a false negative on KDE/Wayland, fall back to probing the
 // system MIME database for an actual handler. This keeps OAuth enabled where the
 // callback can resolve and correctly gated where it can't.
-const linuxSchemeHandler =
-  process.platform === "linux"
-    ? registerLinuxUrlSchemeHandler(OAUTH_PROTOCOL, getProtocolAppArgs())
-    : null;
-const protocolRegistered =
-  linuxSchemeHandler?.registered || registerOpenWhisprProtocol() || isOAuthSchemeRegistered();
-if (!protocolRegistered) {
-  console.warn(`[Auth] Failed to register ${OAUTH_PROTOCOL}:// protocol handler`);
-}
+// This local-only derivative does not claim the installed app's OAuth scheme.
+const linuxSchemeHandler = null;
+const protocolRegistered = false;
 
 const gotSingleInstanceLock = app.requestSingleInstanceLock();
 
@@ -549,7 +548,7 @@ function initializeCoreManagers() {
     onStatusChanged: (statuses) => broadcastToWindows("connector-status-changed", statuses),
   });
   // Pending cards expire in main even when no renderer ever answers them.
-  setInterval(() => connectorManager.sweepExpired(), 60 * 1000).unref();
+  // Connector expiry is unnecessary in the dictation-only app.
   whisperManager = new WhisperManager();
   if (process.platform !== "darwin") {
     whisperCudaManager = new WhisperCudaManager();
@@ -567,6 +566,22 @@ function initializeCoreManagers() {
       // No window exists yet — persist the notice; the window that shows it
       // as a toast takes it (#1606, #2554).
       require("./src/helpers/gpuPackMigrationNotice").record(clearedPacks);
+    }
+    // Local-only build: GPU runtimes cannot be downloaded at run time, so a
+    // bundled Vulkan llama pack is copied into place on first launch and turned
+    // on once. A user who later turns it off in Settings is not overridden.
+    {
+      const { resolveBundledPackDir, seedBundledGpuPack } = require("./src/helpers/bundledGpuPacks");
+      const seeded = seedBundledGpuPack({
+        manager: llamaVulkanManager,
+        bundledDir: resolveBundledPackDir(LlamaVulkanManager.BIN_SUBDIR),
+        logger: debugLogger,
+      });
+      debugLogger.info("Bundled Vulkan llama pack", { state: seeded });
+      if (seeded === "seeded" && process.env.LLAMA_VULKAN_ENABLED === undefined) {
+        process.env.LLAMA_VULKAN_ENABLED = "true";
+        environmentManager.saveAllKeysToEnvFile().catch(() => {});
+      }
     }
     // The 1.8.3 migration deleted lib-carrying packs without recording that
     // notice, leaving those users on a silent CPU fallback: an enabled flag
@@ -678,7 +693,7 @@ function initializeCoreManagers() {
   windowsLoopbackAudioManager = new WindowsLoopbackAudioManager();
   // Warm the capability cache off the hot path so the first meeting start
   // doesn't pay the probe spawn. No-ops on non-Windows.
-  windowsLoopbackAudioManager.getCapability().catch(() => {});
+  // Do not probe meeting loopback capture.
   cleanupOrphanedLinuxRestoreToken();
   syncAutoStartEntry();
   meetingAecManager = new MeetingAecManager();
@@ -782,10 +797,7 @@ function initializeDeferredManagers() {
     });
   }
 
-  googleCalendarManager.start();
-  microsoftCalendarManager.start();
-  appleCalendarManager.start();
-  meetingDetectionEngine.start();
+  // Dictation-only: do not start calendar or meeting monitors.
 }
 
 let pendingEnterpriseAudioTest = null;
@@ -1219,20 +1231,13 @@ async function startApp() {
   // failure before the whisper pre-warm below resolves its GPU backend.
   resetWhisperGpuFailureOnUpgrade(environmentManager);
   registerSidecars();
-  startAuthBridgeServer();
-
-  cliBridge = new CliBridge(ipcHandlers);
-  cliBridge.start().catch((err) => {
-    debugLogger.error("CLI bridge failed to start", { error: err.message });
-    cliBridge = null;
-  });
-
-  await migrateCookieToBearerToken();
+  // No account bridge, CLI bridge, or credential migration in dictation mode.
 
   applyOpenWhisprOriginHeader(session.defaultSession);
 
   await windowManager.setActivationModeCache(environmentManager.getActivationMode());
   windowManager.setFloatingIconAutoHide(environmentManager.getFloatingIconAutoHide());
+  windowManager.setMouseButtonPassThrough(environmentManager.getMouseButtonPassThrough());
   windowManager.setPanelStartPosition(environmentManager.getPanelStartPosition());
 
   let activationModeChangeQueue = Promise.resolve();
@@ -1259,6 +1264,12 @@ async function startApp() {
       .catch((err) => {
         debugLogger.error("Failed to change activation mode", { error: err.message }, "hotkey");
       });
+  });
+
+  ipcMain.on("mouse-button-pass-through-changed", (_event, enabled) => {
+    windowManager.setMouseButtonPassThrough(enabled);
+    environmentManager.saveMouseButtonPassThrough(enabled);
+    windowManager.reconcileNativeKeyListeners();
   });
 
   ipcMain.on("floating-icon-auto-hide-changed", (_event, enabled) => {
@@ -1427,20 +1438,8 @@ async function startApp() {
     await globeKeyManager.restoreLeftoverSystemPreference();
   }
 
-  app.on("browser-window-focus", () => {
-    if (googleCalendarManager) googleCalendarManager.syncOnFocus();
-    if (microsoftCalendarManager) microsoftCalendarManager.syncOnFocus();
-    if (appleCalendarManager) appleCalendarManager.syncOnFocus();
-  });
-
   const { powerMonitor } = require("electron");
   powerMonitor.on("resume", () => {
-    if (calendarReminderScheduler) calendarReminderScheduler.onWakeFromSleep();
-    if (googleCalendarManager) {
-      googleCalendarManager.onWakeFromSleep();
-    }
-    if (microsoftCalendarManager) microsoftCalendarManager.onWakeFromSleep();
-    if (appleCalendarManager) appleCalendarManager.onWakeFromSleep();
     // Sleep evicts the local GPU model from VRAM; reload it once the driver settles. See #766.
     if (wakeRewarmTimer) clearTimeout(wakeRewarmTimer);
     wakeRewarmTimer = setTimeout(() => {
@@ -1492,31 +1491,7 @@ async function startApp() {
     });
   }
 
-  // Auto-download diarization models if binary is available
-  if (
-    diarizationManager.getBinaryPath() &&
-    (!diarizationManager.isModelDownloaded() || !diarizationManager.isVadModelDownloaded())
-  ) {
-    diarizationManager.downloadModels().catch((err) => {
-      debugLogger.debug("Diarization model auto-download error (non-fatal)", {
-        error: err.message,
-      });
-    });
-  }
-
-  const QdrantManager = require("./src/helpers/qdrantManager");
-  const SemanticSearchLifecycle = require("./src/helpers/semanticSearchLifecycle");
-  const localEmbeddings = require("./src/helpers/localEmbeddings");
-  const qdrantManager = new QdrantManager();
-  semanticSearch = new SemanticSearchLifecycle({
-    qdrant: qdrantManager,
-    vectorIndex: require("./src/helpers/vectorIndex"),
-    embeddings: localEmbeddings,
-    noteEmbedText: localEmbeddings.LocalEmbeddings.noteEmbedText,
-    database: databaseManager,
-    logger: debugLogger,
-  });
-  sidecarRegistry.register("qdrant", () => semanticSearch.stop());
+  // Dictation does not start diarization or semantic search services.
 
   if (process.platform === "win32") {
     const nircmdStatus = clipboardManager.getNircmdStatus();
@@ -1531,7 +1506,7 @@ async function startApp() {
   trayManager.setCreateControlPanelCallback(() => windowManager.createControlPanelWindow());
   await trayManager.createTray();
 
-  updateManager.checkForUpdatesOnStartup();
+  // Updates are managed separately from the original OpenWhispr installation.
 
   if (process.platform === "darwin") {
     const { isGlobeLikeHotkey, isMouseButtonHotkey } = require("./src/helpers/hotkeyManager");
@@ -2068,6 +2043,7 @@ if (gotSingleInstanceLock) {
   app
     .whenReady()
     .then(() => {
+      localNetworkBoundary.installSessionBoundary(session.defaultSession);
       // On Linux, --enable-transparent-visuals requires a short delay before creating
       // windows to allow the compositor to set up the ARGB visual correctly.
       // Without this delay, transparent windows flicker on both X11 and Wayland.

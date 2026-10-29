@@ -1,3 +1,4 @@
+import localOnlyDictation from "./localOnlyDictation.mjs";
 import ReasoningService from "../services/ReasoningService";
 import {
   EMPTY_OUTPUT_MESSAGE_KEY,
@@ -85,7 +86,6 @@ import {
 import { getTranscriptionApiKey } from "../services/fileTranscription";
 import { shouldSkipTranscriptionApiKey } from "./transcriptionAuth";
 import {
-  isOrukeetStreaming,
   isSelfHostedTranscription,
   resolveSelfHostedTranscriptionModel,
 } from "./selfHostedTranscription";
@@ -2242,6 +2242,9 @@ registerProcessor("pcm-streaming-processor", PCMStreamingProcessor);
       // the administrator allows it. Error resolutions fail closed inside
       // processWithOpenAIAPI with their own code.
       const managedTranscription = getManagedTranscriptionResolution();
+      if (!localOnlyDictation.localDictationAllowed(settings, managedTranscription)) {
+        throw new Error("Local transcription is required. Select an installed local model.");
+      }
       if (managedTranscription) {
         activeModel =
           managedTranscription.kind === "managed" ? managedTranscription.deployment : null;
@@ -2539,32 +2542,8 @@ registerProcessor("pcm-streaming-processor", PCMStreamingProcessor);
         throw error;
       }
 
-      const {
-        allowOpenAIFallback,
-        useLocalWhisper: isLocalMode,
-        cloudTranscriptionProvider,
-      } = getSettings();
-      // A policy-blocked fallback surfaces the local failure, not a policy error.
-      const fallbackAllowedByPolicy = isTranscriptionSelectionAllowed(usePolicyStore.getState(), {
-        mode: "providers",
-        provider: cloudTranscriptionProvider || "openai",
-      });
-
-      if (allowOpenAIFallback && isLocalMode && fallbackAllowedByPolicy) {
-        try {
-          const fallbackResult = await this.processWithOpenAIAPI(audioBlob, metadata, wasCancelled);
-          return { ...fallbackResult, source: "openai-fallback" };
-        } catch (fallbackError) {
-          if (fallbackError.selectionEditFatal) {
-            throw fallbackError;
-          }
-          throw new Error(
-            `Local Whisper failed: ${error.message}. OpenAI fallback also failed: ${fallbackError.message}`
-          );
-        }
-      } else {
-        throw new Error(`Local Whisper failed: ${error.message}`);
-      }
+      if (error.transcript) throw error;
+      throw new Error(`Local Whisper failed: ${error.message}`);
     }
   }
 
@@ -2650,32 +2629,8 @@ registerProcessor("pcm-streaming-processor", PCMStreamingProcessor);
         throw error;
       }
 
-      const {
-        allowOpenAIFallback,
-        useLocalWhisper: isLocalMode,
-        cloudTranscriptionProvider,
-      } = getSettings();
-      // A policy-blocked fallback surfaces the local failure, not a policy error.
-      const fallbackAllowedByPolicy = isTranscriptionSelectionAllowed(usePolicyStore.getState(), {
-        mode: "providers",
-        provider: cloudTranscriptionProvider || "openai",
-      });
-
-      if (allowOpenAIFallback && isLocalMode && fallbackAllowedByPolicy) {
-        try {
-          const fallbackResult = await this.processWithOpenAIAPI(audioBlob, metadata, wasCancelled);
-          return { ...fallbackResult, source: "openai-fallback" };
-        } catch (fallbackError) {
-          if (fallbackError.selectionEditFatal) {
-            throw fallbackError;
-          }
-          throw new Error(
-            `Parakeet failed: ${error.message}. OpenAI fallback also failed: ${fallbackError.message}`
-          );
-        }
-      } else {
-        throw new Error(`Parakeet failed: ${error.message}`);
-      }
+      if (error.transcript) throw error;
+      throw new Error(`Parakeet failed: ${error.message}`);
     }
   }
 
@@ -3355,9 +3310,15 @@ registerProcessor("pcm-streaming-processor", PCMStreamingProcessor);
       timestamp: new Date().toISOString(),
     });
 
+    const settings = getSettings();
+    // Fail closed and retain the raw transcript when a remote reasoning route is selected.
+    if (!localOnlyDictation.localCleanupAllowed(
+      selectResolvedLLMConfig(settings, "dictationCleanup"),
+      this.voiceAgentRequested || settings.useDictationAgent,
+      this.translationRequested
+    )) return normalizedText;
     const cleanupModel = getEffectiveCleanupModel();
     const isCloud = isCloudCleanupMode();
-    const settings = getSettings();
     const cleanupProvider = settings.cleanupProvider || "auto";
     const cleanupReachable = !!settings.useCleanupModel && (!!cleanupModel || isCloud);
     const agentReachable = dictationAgentReachable(settings);
@@ -4759,85 +4720,9 @@ registerProcessor("pcm-streaming-processor", PCMStreamingProcessor);
     };
   }
 
-  shouldUseStreaming(isSignedInOverride) {
-    const s = getSettings();
-    if (s.useLocalWhisper) return false;
-
-    // Managed enterprise STT is batch-only and outranks personal streaming
-    // setups; an error resolution must fail closed on the batch path too.
-    if (getManagedTranscriptionResolution()) return false;
-
-    if (isOrukeetStreaming(s)) return Boolean(s.customTranscriptionApiKey);
-
-    // Self-hosted transcription is batch HTTP to the user's server, never cloud realtime WS.
-    if (isSelfHostedTranscription(s)) return false;
-
-    if (
-      s.cloudTranscriptionMode === "openwhispr" &&
-      this.sttConfig?.streamingProvider === "orukeet"
-    ) {
-      // A language the model does not cover takes the batch path, which
-      // carries the language, instead of a socket that would ignore it.
-      const route = resolveManagedOrukeetRoute({
-        settings: s,
-        sttConfig: this.sttConfig,
-        language: this.getEffectiveSttLanguage(s),
-      });
-      return route === "orukeet" && Boolean(isSignedInOverride ?? s.isSignedIn);
-    }
-
-    // Corti (BYOK) streams over its own WSS — independent of OpenWhispr Cloud.
-    if (s.cloudTranscriptionProvider === "corti" && s.cloudTranscriptionMode === "byok") {
-      return !!(s.cortiClientId && s.cortiClientSecret);
-    }
-
-    // Tinfoil realtime streams without an OpenWhispr account.
-    if (s.cloudTranscriptionProvider === "tinfoil") {
-      const provider = getTranscriptionProvider("tinfoil");
-      const model = provider?.models.find((m) => m.id === s.cloudTranscriptionModel);
-      return !!model?.streaming && !!s.tinfoilApiKey;
-    }
-
-    // Gemini Live streams over its own WSS on either credential; the batch
-    // Gemini model on the same provider stays on HTTP.
-    if (s.cloudTranscriptionProvider === "gemini") {
-      const provider = getTranscriptionProvider("gemini");
-      const model = provider?.models.find((m) => m.id === s.cloudTranscriptionModel);
-      if (!model?.streaming) return false;
-      if (s.cloudTranscriptionMode === "byok") return !!s.geminiApiKey;
-      return !!(isSignedInOverride ?? s.isSignedIn);
-    }
-
-    // Realtime-only providers (BYOK) stream over their own WSS and have no batch
-    // endpoint at all — transcriptionRoute fails those closed — so gate on the
-    // key instead of letting them fall through to the HTTP path.
-    if (
-      s.cloudTranscriptionMode === "byok" &&
-      STREAMING_ONLY_PROVIDERS.has(s.cloudTranscriptionProvider)
-    ) {
-      return Boolean(getTranscriptionApiKey(s.cloudTranscriptionProvider, s));
-    }
-
-    // The managed-cloud bootstrap only controls OpenWhispr Cloud. A user's
-    // BYOK realtime model must not be downgraded because managed dictation is
-    // configured for batch processing.
-    if (s.cloudTranscriptionMode === "openwhispr" && this.sttConfig?.dictation?.mode === "batch") {
-      return false;
-    }
-
-    if (REALTIME_MODELS.has(s.cloudTranscriptionModel)) {
-      // Realtime WS is OpenAI-only — other providers fall through to HTTP.
-      if ((s.cloudTranscriptionProvider || "openai") !== "openai") return false;
-      if (s.cloudTranscriptionMode === "byok") return !!s.openaiApiKey;
-      if (s.cloudTranscriptionMode === "openwhispr") return !!(isSignedInOverride ?? s.isSignedIn);
-      return false;
-    }
-
-    if (s.cloudTranscriptionMode !== "openwhispr" || !(isSignedInOverride ?? s.isSignedIn)) {
-      return false;
-    }
-    if (!this.sttConfig) return false;
-    return this.sttConfig.dictation?.mode === "streaming";
+  shouldUseStreaming() {
+    // Local online Parakeet uses the separate PCM preview path.
+    return false;
   }
 
   getPipelineCleanupOptions(

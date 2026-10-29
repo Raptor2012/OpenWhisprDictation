@@ -1,0 +1,4 @@
+{
+  "extends": "electron-builder.unsigned-win.json",
+  "directories": { "output": "dist-next" }
+}

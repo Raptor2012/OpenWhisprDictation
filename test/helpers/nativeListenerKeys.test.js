@@ -161,3 +161,9 @@ test("translation slot conflicts are detected and it is never push-enabled", () 
   const mgr2 = makeManager({ translation: "Control+Alt" });
   assert.deepEqual(mgr2.getNativeListenerKeys("tap"), ["Control+Alt"]);
 });
+
+test("Windows mouse side buttons are watched in tap and push modes", { skip: process.platform !== "win32" }, () => {
+  const mgr = makeManager({ dictation: "MouseButton4", voiceAgent: "MouseButton5" });
+  assert.deepEqual(mgr.getNativeListenerKeys("tap"), ["MouseButton4", "MouseButton5"]);
+  assert.deepEqual(mgr.getNativeListenerKeys("push"), ["MouseButton4", "MouseButton5"]);
+});

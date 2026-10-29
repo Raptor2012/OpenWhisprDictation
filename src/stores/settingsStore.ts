@@ -191,7 +191,7 @@ function readString(key: string, fallback: string): string {
 const DEFAULT_COHERE_MODEL = "cohere-transcribe-03-2026";
 
 function readLocalProvider(key: string): LocalTranscriptionProvider {
-  const stored = readString(key, "whisper");
+  const stored = readString(key, "nvidia");
   return stored === "nvidia" || stored === "cohere" ? stored : "whisper";
 }
 
@@ -408,6 +408,16 @@ function migrateProviderSettings() {
   if (!isBrowser) return;
   if (localStorage.getItem("_providerSettingsMigrated") === "1") return;
 
+  // New profiles start locally; preserve existing profiles for the legacy migration.
+  const fresh = ["useLocalWhisper", "cloudTranscriptionMode", "reasoningProvider", "cloudReasoningMode", "transcriptionMode", "cleanupMode"].every(
+    key => localStorage.getItem(key) === null
+  );
+  if (fresh) {
+    localStorage.setItem("useLocalWhisper", "true");
+    localStorage.setItem("cloudReasoningMode", "byok");
+    localStorage.setItem("reasoningProvider", "gemma");
+    localStorage.setItem("reasoningModel", "gemma-4-e4b-it-qat-q4_0");
+  }
   const cloudMode = localStorage.getItem("cloudTranscriptionMode");
   const useLocal = localStorage.getItem("useLocalWhisper") === "true";
   const provider = localStorage.getItem("cloudTranscriptionProvider");
@@ -439,6 +449,25 @@ function migrateProviderSettings() {
 }
 
 migrateProviderSettings();
+
+// Dictation build: on the user's own recordings the batch Parakeet Unified EN
+// model was both more accurate and quicker to finish than the streaming
+// Nemotron models, so profiles still on a streaming model move to it once.
+const DICTATION_DEFAULT_PARAKEET_MODEL = "parakeet-unified-en-0.6b";
+const RETIRED_DICTATION_STREAMING_MODELS = new Set([
+  "nemotron-speech-streaming-en-0.6b",
+  "nemotron-3.5-asr-streaming-0.6b",
+]);
+function migrateDictationAsrModel() {
+  if (!isBrowser) return;
+  if (localStorage.getItem("_dictationUnifiedEnMigrated") === "1") return;
+  const current = localStorage.getItem("parakeetModel");
+  if (current === null || RETIRED_DICTATION_STREAMING_MODELS.has(current)) {
+    localStorage.setItem("parakeetModel", DICTATION_DEFAULT_PARAKEET_MODEL);
+  }
+  localStorage.setItem("_dictationUnifiedEnMigrated", "1");
+}
+migrateDictationAsrModel();
 
 // One-time migration for legacy `meetingFollows{Transcription,Reasoning}` flags.
 // When the flag was true (the default), meeting/note recordings inherited the
@@ -1531,10 +1560,10 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
   uiLanguage: normalizeUiLanguage(
     isBrowser ? localStorage.getItem("uiLanguage") || i18n.language : null
   ),
-  useLocalWhisper: readBoolean("useLocalWhisper", false),
+  useLocalWhisper: readBoolean("useLocalWhisper", true),
   whisperModel: readString("whisperModel", "base"),
   localTranscriptionProvider: readLocalProvider("localTranscriptionProvider"),
-  parakeetModel: readString("parakeetModel", ""),
+  parakeetModel: readString("parakeetModel", DICTATION_DEFAULT_PARAKEET_MODEL),
   cohereModel: readString("cohereModel", DEFAULT_COHERE_MODEL),
   allowOpenAIFallback: readBoolean("allowOpenAIFallback", false),
   allowLocalFallback: readBoolean("allowLocalFallback", false),
@@ -1574,9 +1603,9 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
 
   autoGenerateNoteTitle: readBoolean("autoGenerateNoteTitle", true),
   useCleanupModel: readBoolean("useCleanupModel", true),
-  useDictationAgent: readBoolean("useDictationAgent", true),
-  cleanupModel: readString("cleanupModel", ""),
-  cleanupProvider: readString("cleanupProvider", "openai"),
+  useDictationAgent: readBoolean("useDictationAgent", false),
+  cleanupModel: readString("cleanupModel", "gemma-4-e4b-it-qat-q4_0"),
+  cleanupProvider: readString("cleanupProvider", "gemma"),
 
   // Secrets hydrate from main process in initializeSettings, never from localStorage.
   openaiApiKey: "",
@@ -1737,7 +1766,7 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
   isSignedIn: readBoolean("isSignedIn", false),
 
   transcriptionMode: (() => {
-    const v = readString("transcriptionMode", "openwhispr");
+    const v = readString("transcriptionMode", "local");
     if (v === "openwhispr" || v === "providers" || v === "local" || v === "self-hosted") return v;
     return "openwhispr" as InferenceMode;
   })(),
@@ -1748,7 +1777,7 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
   remoteTranscriptionUrl: readString("remoteTranscriptionUrl", ""),
   remoteTranscriptionModel: readString("remoteTranscriptionModel", ""),
   cleanupMode: (() => {
-    const v = readString("cleanupMode", "openwhispr");
+    const v = readString("cleanupMode", "local");
     if (
       v === "openwhispr" ||
       v === "providers" ||

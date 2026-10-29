@@ -322,3 +322,14 @@ src/assets/fonts/yowza/*.otf
 
 # Local scratch output from the Superpowers Claude Code plugin (SDD fix reports etc.).
 .superpowers/
+
+# Benchmark data and local models (private recordings, large binaries)
+benchmark-audio/
+benchmark-audio-norm/
+benchmark-models/
+dist-next/
+*.wav
+*.webm
+*.onnx
+*.gguf
+*.dll

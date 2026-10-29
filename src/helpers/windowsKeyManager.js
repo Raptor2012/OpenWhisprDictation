@@ -14,6 +14,8 @@ const EventEmitter = require("events");
 const fs = require("fs");
 const debugLogger = require("./debugLogger");
 
+const MOUSE_BUTTON_KEY = /^MouseButton[45]$/i;
+
 class WindowsKeyManager extends EventEmitter {
   constructor() {
     super();
@@ -21,15 +23,26 @@ class WindowsKeyManager extends EventEmitter {
     this.hasReportedError = false;
     this.hasReportedUnavailable = false;
     this.listeners = new Map(); // key string -> child process
+    // Whether bound mouse side buttons are consumed by the hook so their
+    // default action (browser Back/Forward) stays quiet while dictating.
+    this.swallowMouseButtons = true;
   }
 
   /**
    * Reconcile the watched keys to exactly `keys`: spawn a listener for each new
    * key, stop listeners no longer wanted. Idempotent — safe to call repeatedly.
    */
-  setKeys(keys) {
+  setKeys(keys, options = {}) {
     if (!this.isSupported) return;
     const desired = new Set(keys.filter(Boolean));
+    if (typeof options.swallowMouseButtons === "boolean" &&
+        options.swallowMouseButtons !== this.swallowMouseButtons) {
+      this.swallowMouseButtons = options.swallowMouseButtons;
+      // The flag is a spawn argument, so running mouse listeners restart.
+      for (const key of [...this.listeners.keys()]) {
+        if (MOUSE_BUTTON_KEY.test(key)) this._stopKey(key);
+      }
+    }
 
     for (const key of [...this.listeners.keys()]) {
       if (!desired.has(key)) this._stopKey(key);
@@ -55,7 +68,7 @@ class WindowsKeyManager extends EventEmitter {
   _startKey(key, listenerPath) {
     let child;
     try {
-      child = spawn(listenerPath, [key], {
+      child = spawn(listenerPath, this._listenerArgs(key), {
         stdio: ["ignore", "pipe", "pipe"],
         windowsHide: true,
       });
@@ -114,6 +127,11 @@ class WindowsKeyManager extends EventEmitter {
         );
       }
     });
+  }
+
+  _listenerArgs(key) {
+    if (MOUSE_BUTTON_KEY.test(key) && this.swallowMouseButtons) return [key, "--swallow"];
+    return [key];
   }
 
   _stopKey(key) {

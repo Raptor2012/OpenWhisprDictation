@@ -691,6 +691,11 @@ contextBridge.exposeInMainWorld("electronAPI", {
   getActivationMode: () => ipcRenderer.invoke("get-activation-mode"),
   saveActivationMode: (mode) => ipcRenderer.invoke("save-activation-mode", mode),
 
+  // Windows: whether a bound mouse side button keeps its normal action
+  getMouseButtonPassThrough: () => ipcRenderer.invoke("get-mouse-button-pass-through"),
+  notifyMouseButtonPassThroughChanged: (enabled) =>
+    ipcRenderer.send("mouse-button-pass-through-changed", enabled),
+
   saveAllKeysToEnv: () => ipcRenderer.invoke("save-all-keys-to-env"),
   syncStartupPreferences: (prefs) => ipcRenderer.invoke("sync-startup-preferences", prefs),
 

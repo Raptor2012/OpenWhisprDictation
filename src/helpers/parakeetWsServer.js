@@ -35,7 +35,13 @@ const ONLINE_FINISH_IDLE_TIMEOUT_MS = 10000;
 const ONLINE_END_TAIL_PADDING_S = 0.6;
 const AVAILABLE_CPUS = getAvailableParallelism();
 // ONNX intra-op threads for one decode; the cap of four dates from #1131.
-const INTRA_OP_THREADS = Math.max(1, Math.min(4, Math.floor(AVAILABLE_CPUS * 0.75)));
+// OPENWHISPR_ASR_THREADS overrides the cap (the dictation build raises it for
+// faster batch decodes on wide desktop CPUs); never more than the cores.
+const INTRA_OP_THREADS = (() => {
+  const override = Number.parseInt(process.env.OPENWHISPR_ASR_THREADS || "", 10);
+  if (Number.isInteger(override) && override >= 1) return Math.min(override, AVAILABLE_CPUS);
+  return Math.max(1, Math.min(4, Math.floor(AVAILABLE_CPUS * 0.75)));
+})();
 // sherpa-onnx's offline server decodes each connection on its own work thread.
 const OFFLINE_WORK_THREADS = 3;
 // How many segments the manager may hand the offline server at once: one per
@@ -153,6 +159,8 @@ class ParakeetWsServer {
             "--warm-up=0",
           ]
         : [`--num-threads=${INTRA_OP_THREADS}`, `--num-work-threads=${OFFLINE_WORK_THREADS}`]),
+      // Tuning knob for benchmarks (e.g. --decoding-method=modified_beam_search).
+      ...(process.env.OPENWHISPR_ASR_EXTRA_ARGS || "").split(/\s+/).filter(Boolean),
     ];
 
     debugLogger.debug("Starting parakeet WS server", { port: this.port, modelName, runtime, args });

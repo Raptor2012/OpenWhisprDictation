@@ -22,7 +22,10 @@
  */
 
 #define WIN32_LEAN_AND_MEAN
+#define COBJMACROS
 #include <windows.h>
+#include <oleauto.h>
+#include <uiautomation.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
@@ -253,15 +256,46 @@ static int SendCopyTerminal(void) {
     return (SendInput(6, inputs, sizeof(INPUT)) == 6) ? 0 : 1;
 }
 
+/* Inspect only UI Automation metadata, never field values or selection text. */
+static BOOL SafeFocusedField(HWND expected) {
+    if (!expected || GetForegroundWindow() != expected) return FALSE;
+    DWORD expectedPid = 0;
+    GetWindowThreadProcessId(expected, &expectedPid);
+    if (!expectedPid || FAILED(CoInitializeEx(NULL, COINIT_APARTMENTTHREADED))) return FALSE;
+    IUIAutomation *automation = NULL;
+    IUIAutomationElement *focused = NULL;
+    IUIAutomationValuePattern *value = NULL;
+    BOOL enabled = FALSE, focusable = FALSE, password = TRUE, readOnly = TRUE;
+    int pid = 0;
+    BOOL ok = SUCCEEDED(CoCreateInstance(&CLSID_CUIAutomation, NULL, CLSCTX_INPROC_SERVER,
+        &IID_IUIAutomation, (void **)&automation)) && automation &&
+        SUCCEEDED(IUIAutomation_GetFocusedElement(automation, &focused)) && focused &&
+        SUCCEEDED(IUIAutomationElement_get_CurrentProcessId(focused, &pid)) && (DWORD)pid == expectedPid &&
+        SUCCEEDED(IUIAutomationElement_get_CurrentIsEnabled(focused, &enabled)) && enabled &&
+        SUCCEEDED(IUIAutomationElement_get_CurrentIsKeyboardFocusable(focused, &focusable)) && focusable &&
+        SUCCEEDED(IUIAutomationElement_get_CurrentIsPassword(focused, &password)) && !password &&
+        SUCCEEDED(IUIAutomationElement_GetCurrentPatternAs(focused, UIA_ValuePatternId,
+            &IID_IUIAutomationValuePattern, (void **)&value)) && value &&
+        SUCCEEDED(IUIAutomationValuePattern_get_CurrentIsReadOnly(value, &readOnly)) && !readOnly;
+    if (value) IUIAutomationValuePattern_Release(value);
+    if (focused) IUIAutomationElement_Release(focused);
+    if (automation) IUIAutomation_Release(automation);
+    CoUninitialize();
+    return ok && GetForegroundWindow() == expected;
+}
+
 int main(int argc, char* argv[]) {
     BOOL detectOnly = FALSE;
     BOOL copyMode = FALSE;
     BOOL capabilitiesOnly = FALSE;
+    BOOL safePaste = FALSE;
     HWND restoreWindow = NULL;
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--detect-only") == 0) {
             detectOnly = TRUE;
+        } else if (strcmp(argv[i], "--safe-paste") == 0) {
+            safePaste = TRUE;
         } else if (strcmp(argv[i], "--copy") == 0) {
             copyMode = TRUE;
         } else if (strcmp(argv[i], "--capabilities") == 0) {
@@ -274,7 +308,7 @@ int main(int argc, char* argv[]) {
     }
 
     if (capabilitiesOnly) {
-        printf("paste-v1 selection-copy-v1 target-identity-v1 focus-restore-v1\n");
+        printf("paste-v1 selection-copy-v1 target-identity-v1 focus-restore-v1 safe-paste-v1\n");
         return 0;
     }
 
@@ -283,7 +317,7 @@ int main(int argc, char* argv[]) {
        which is the pre-#859 behavior. The settle sleep only applies when a
        window switch actually happened — in the common case where the target
        never lost the foreground, the paste goes out immediately. */
-    if (restoreWindow && GetForegroundWindow() != restoreWindow &&
+    if (!safePaste && restoreWindow && GetForegroundWindow() != restoreWindow &&
         RestoreForegroundWindow(restoreWindow)) {
         Sleep(20);
     }
@@ -326,7 +360,13 @@ int main(int argc, char* argv[]) {
         return 0;
     }
 
+    if (safePaste && (copyMode || isTerminal || !SafeFocusedField(restoreWindow))) {
+        fprintf(stderr, "ERROR: Target field is not verified\n");
+        return 4;
+    }
+    if (safePaste && GetForegroundWindow() != restoreWindow) return 4;
     Sleep(10);
+    if (safePaste && GetForegroundWindow() != restoreWindow) return 4;
 
     /* Release any modifier keys held by the user's hotkey so they don't
        contaminate the paste keystroke (e.g. Ctrl+Win held → Ctrl+Win+V). */

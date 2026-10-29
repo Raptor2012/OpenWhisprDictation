@@ -426,14 +426,14 @@ function createStreamingLeakManager(AudioManager) {
 }
 
 test("a cancelled batch pipeline cannot clear newer streaming finalization", async (t) => {
-  const { AudioManager } = await loadCancelGuardManagerClass(t);
+  const { AudioManager } = await loadManagerClass(t);
   const { manager } = createStreamingLeakManager(AudioManager);
   const oldTranscription = deferred();
   manager.isRecording = false;
   manager.isProcessing = true;
   manager.isStreaming = false;
   manager._localSpeechGateState = null;
-  manager.processWithOpenWhisprCloud = () => oldTranscription.promise;
+  manager.processWithLocalWhisper = () => oldTranscription.promise;
 
   const oldRun = manager.processAudio(new Blob(["old"], { type: "audio/webm" }));
   assert.equal(manager.cancelProcessing(), true);

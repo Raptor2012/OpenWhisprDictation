@@ -1847,3 +1847,31 @@ test("_writePrimarySelection on KDE mirrors wl-copy to Electron's X11 selection"
   );
   assert.deepEqual(fakeClipboard.writes, [["writeText", "selection text", "selection"]]);
 });
+
+test('Windows paste declines without verified target and keeps clipboard contents', async () => {
+  const TestClipboardManager = loadClipboardManager();
+  const manager = new TestClipboardManager();
+  let injected = false;
+  manager.resolveWindowsFastPasteBinary = () => 'helper.exe';
+  manager.pasteWithFastPaste = () => { injected = true; };
+  manager.pasteWithNircmdOrPowerShell = () => { injected = true; };
+  const result = await manager.pasteWindows({ type: 'text', data: 'old' }, { targetWindow: '123' });
+  assert.equal(result.pasted, false);
+  assert.equal(result.reason, 'target-unverified');
+  assert.equal(injected, false);
+});
+
+test('Windows paste uses verified helper and never falls back after a rejection', async () => {
+  const calls = [];
+  const Manager = loadClipboardManager({
+    spawn: createSpawn(calls, [4]),
+    spawnSync: () => ({ status: 0, stdout: 'safe-paste-v1' }),
+  });
+  const manager = new Manager();
+  manager.resolveWindowsFastPasteBinary = () => 'verified.exe';
+  manager.pasteWithNircmdOrPowerShell = () => { throw new Error('unsafe fallback'); };
+  const result = await manager.pasteWindows(null, { targetWindow: '1A2B' });
+  assert.deepEqual(calls[0].args, ['--restore-window', '1A2B', '--safe-paste']);
+  assert.equal(result.pasted, false);
+  assert.equal(result.reason, 'target-unverified');
+});

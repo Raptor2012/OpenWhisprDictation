@@ -158,7 +158,6 @@ const {
 const { deriveDetectorPreferences } = require("./meetingDetectionPreferencePolicy");
 const { resolveDiarizationInput } = require("./meetingDiarizationInput");
 const { applySmartSpacing } = require("./smartSpacing");
-const { applyAutoLearnSetting } = require("./autoLearnSetting");
 const {
   DEFAULT_RETENTION_SETTINGS,
   createRetentionSettingsHandler,
@@ -282,6 +281,7 @@ function getCloudUploadSession(partition) {
   if (!cloudUploadSessions.has(partition)) {
     const uploadSession = session.fromPartition(partition);
     applyOpenWhisprOriginHeader(uploadSession);
+    require("./localNetworkBoundary").installSessionBoundary(uploadSession);
     cloudUploadSessions.set(partition, uploadSession);
   }
   return cloudUploadSessions.get(partition);
@@ -721,7 +721,7 @@ class IPCHandlers {
     this._meetingMicStreaming = null;
     this._meetingSystemStreaming = null;
     this._hotkeyCaptureMode = false;
-    this._autoLearnEnabled = true; // Default on, synced from renderer
+    this._autoLearnEnabled = false; // External-field monitoring is disabled.
     this._autoLearnDebounceTimer = null;
     this._autoLearnLatestData = null;
     this._textEditHandler = null;
@@ -750,7 +750,6 @@ class IPCHandlers {
       ...DEFAULT_WHISPER_VAD_CONFIG,
     };
     liveSpeakerIdentifier.setDiarizationManager(this.diarizationManager);
-    this._setupTextEditMonitor();
     this._setupRetentionCleanup();
     this._logDetectedGpus();
     // Warm the OS default mic answer before the first hotkey press (~2s on Windows).
@@ -1369,86 +1368,6 @@ class IPCHandlers {
       }
     } catch (error) {
       debugLogger.error("Retention cleanup failed", { error: error.message }, "audio-storage");
-    }
-  }
-
-  _setupTextEditMonitor() {
-    if (!this.textEditMonitor) return;
-
-    this._textEditHandler = (data) => {
-      if (
-        !data ||
-        typeof data.originalText !== "string" ||
-        typeof data.newFieldValue !== "string"
-      ) {
-        debugLogger.debug("[AutoLearn] Invalid event payload, skipping");
-        return;
-      }
-
-      const { originalText, newFieldValue } = data;
-
-      debugLogger.debug("[AutoLearn] text-edited event", {
-        originalPreview: originalText.substring(0, 80),
-        newValuePreview: newFieldValue.substring(0, 80),
-      });
-
-      this._autoLearnLatestData = { originalText, newFieldValue };
-
-      if (this._autoLearnDebounceTimer) {
-        clearTimeout(this._autoLearnDebounceTimer);
-      }
-
-      this._autoLearnDebounceTimer = setTimeout(() => {
-        this._processCorrections();
-      }, AUTO_LEARN_DEBOUNCE_MS);
-    };
-
-    this.textEditMonitor.on("text-edited", this._textEditHandler);
-  }
-
-  _processCorrections() {
-    this._autoLearnDebounceTimer = null;
-    if (!this._autoLearnLatestData) return;
-    if (!this._autoLearnEnabled) {
-      debugLogger.debug("[AutoLearn] Disabled, skipping correction processing");
-      this._autoLearnLatestData = null;
-      return;
-    }
-
-    const { originalText, newFieldValue } = this._autoLearnLatestData;
-    this._autoLearnLatestData = null;
-
-    try {
-      const { extractCorrections } = require("../utils/correctionLearner");
-      const currentDict = this._getDictionarySafe();
-      const corrections = extractCorrections(originalText, newFieldValue, currentDict);
-      debugLogger.debug("[AutoLearn] Corrections result", {
-        corrections,
-        dictSize: currentDict.length,
-      });
-
-      if (corrections.length > 0) {
-        const saveResult = this.databaseManager.applyDictionaryChanges(
-          { add: corrections },
-          "learned"
-        );
-
-        if (saveResult?.success === false) {
-          debugLogger.debug("[AutoLearn] Failed to save dictionary", { error: saveResult.error });
-          return;
-        }
-
-        // Broadcast the post-save normalized list, not the raw input (which
-        // still has case-variant dupes), so renderers don't flash ghost rows.
-        broadcastToWindows("dictionary-updated", this.databaseManager.getDictionary());
-
-        // Show the overlay so the toast is visible (it may have been hidden after dictation)
-        this.windowManager.showDictationPanel();
-        broadcastToWindows("corrections-learned", corrections);
-        debugLogger.debug("[AutoLearn] Saved corrections", { corrections });
-      }
-    } catch (error) {
-      debugLogger.debug("[AutoLearn] Error processing corrections", { error: error.message });
     }
   }
 
@@ -2172,20 +2091,8 @@ class IPCHandlers {
     });
 
     // Dictionary handlers
-    ipcMain.on("auto-learn-changed", (_event, enabled) => {
-      // Both renderer windows re-sync this on mount — ignore same-value updates (#1080).
-      const { changed, enabled: next } = applyAutoLearnSetting(this._autoLearnEnabled, enabled);
-      if (!changed) return;
-      this._autoLearnEnabled = next;
-      if (!this._autoLearnEnabled) {
-        if (this._autoLearnDebounceTimer) {
-          clearTimeout(this._autoLearnDebounceTimer);
-          this._autoLearnDebounceTimer = null;
-        }
-        this._autoLearnLatestData = null;
-      }
-      debugLogger.debug("[AutoLearn] Setting changed", { enabled: this._autoLearnEnabled });
-    });
+    // Legacy renderer setting is deliberately ignored: external fields are never monitored.
+    ipcMain.on("auto-learn-changed", () => {});
 
     ipcMain.handle("db-get-dictionary", async () => {
       return this.databaseManager.getDictionary();
@@ -3479,24 +3386,6 @@ class IPCHandlers {
         };
       }
       const pasted = pasteResult?.pasted !== false;
-      debugLogger.debug("[AutoLearn] Paste completed", {
-        autoLearnEnabled: this._autoLearnEnabled,
-        hasMonitor: !!this.textEditMonitor,
-        targetPid,
-        pasted,
-      });
-      if (pasted && this.textEditMonitor && this._autoLearnEnabled) {
-        setTimeout(() => {
-          try {
-            debugLogger.debug("[AutoLearn] Starting monitoring", {
-              textPreview: text.substring(0, 80),
-            });
-            this.textEditMonitor.startMonitoring(text, 30000, { targetPid });
-          } catch (err) {
-            debugLogger.debug("[AutoLearn] Failed to start monitoring", { error: err.message });
-          }
-        }, 500);
-      }
       // ClipboardManager returns `restoreComplete` so main-process callers can
       // serialize subsequent clipboard work behind its delayed restore. A
       // Promise cannot cross Electron's IPC boundary, though, and renderer
@@ -5680,6 +5569,10 @@ class IPCHandlers {
 
     ipcMain.handle("save-activation-mode", async (event, mode) => {
       return this.environmentManager.saveActivationMode(mode);
+    });
+
+    ipcMain.handle("get-mouse-button-pass-through", async () => {
+      return this.environmentManager.getMouseButtonPassThrough();
     });
 
     ipcMain.handle("get-ui-language", async () => {
@@ -11259,7 +11152,7 @@ class IPCHandlers {
 
     ipcMain.handle("cloud-api-request", (_event, opts) => handleCloudApiRequest(opts));
 
-    ipcMain.handle("get-stt-config", handleSttConfigRequest);
+    ipcMain.handle("get-stt-config", async () => null);
 
     ipcMain.handle("get-workspace-policy", async (event, accountId, expectedAuthGeneration) => {
       const authHeaders = await getAuthHeader(event);
@@ -13101,13 +12994,8 @@ class IPCHandlers {
     ]);
 
     this._syncMeetingDetectorPolicy = () => {
-      this.meetingDetectionEngine?.setPreferences(
-        deriveDetectorPreferences({
-          ...this.windowManager.notificationPrefs,
-          meetingProcessDetection: this.meetingProcessDetection,
-          meetingRecordingEnabled: !this._audioFeaturePolicy.failure("meeting"),
-        })
-      );
+      // Dictation mode never starts meeting process or microphone activity monitors.
+      this.meetingDetectionEngine?.setPreferences({ processDetection: false, audioDetection: false });
       // The tray's meeting item follows the same policy.
       this.getTrayManager?.()?.updateTrayMenu?.();
     };

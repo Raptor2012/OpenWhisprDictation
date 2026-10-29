@@ -756,43 +756,61 @@ function TranscriptionSection({
     <div className="space-y-4">
       {errorCard}
       {managedCard}
-      <EnterpriseAudioSettings />
-      {!errorCard && !managedCard && (
+      {Boolean(0) && <EnterpriseAudioSettings />}
+      {true && (
         <>
-          {enterpriseTranscriptionSetupMode === "manual" && managedAvailable.kind === "managed" && (
-            <div className="flex items-center justify-between gap-3 rounded-lg border bg-muted/30 p-3">
-              <div className="min-w-0">
-                <p className="text-sm font-medium">
-                  {t("settingsPage.aiModels.managedEnterprise.availableTitle")}
-                </p>
-                <p className="text-xs text-muted-foreground">
-                  {t("settingsPage.aiModels.managedEnterprise.availableDescription", {
-                    provider: enterpriseProviderName(managedAvailable.provider),
-                  })}
-                </p>
+          {Boolean(0) &&
+            enterpriseTranscriptionSetupMode === "manual" &&
+            managedAvailable.kind === "managed" && (
+              <div className="flex items-center justify-between gap-3 rounded-lg border bg-muted/30 p-3">
+                <div className="min-w-0">
+                  <p className="text-sm font-medium">
+                    {t("settingsPage.aiModels.managedEnterprise.availableTitle")}
+                  </p>
+                  <p className="text-xs text-muted-foreground">
+                    {t("settingsPage.aiModels.managedEnterprise.availableDescription", {
+                      provider: enterpriseProviderName(managedAvailable.provider),
+                    })}
+                  </p>
+                </div>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="shrink-0"
+                  onClick={() => setEnterpriseTranscriptionSetupMode("managed")}
+                >
+                  {t("settingsPage.aiModels.managedEnterprise.useManaged")}
+                </Button>
               </div>
+            )}
+          {Boolean(0) && (
+            <InferenceModeSelector
+              modes={transcriptionModes}
+              activeMode={effectiveTranscriptionMode}
+              onSelect={handleTranscriptionModeSelect}
+            />
+          )}
+
+          {Boolean(0) &&
+            effectiveTranscriptionMode === "providers" &&
+            renderTranscriptionPicker("cloud")}
+          {effectiveTranscriptionMode !== "local" && (
+            <div className="rounded-lg border p-3 text-sm">
+              <p className="mb-2">{t("dictationApp.settings.localOnlyDescription")}</p>
               <Button
                 type="button"
                 variant="outline"
-                size="sm"
-                className="shrink-0"
-                onClick={() => setEnterpriseTranscriptionSetupMode("managed")}
+                onClick={() => handleTranscriptionModeSelect("local")}
               >
-                {t("settingsPage.aiModels.managedEnterprise.useManaged")}
+                {t("dictationApp.settings.useLocalTranscription")}
               </Button>
             </div>
           )}
-          <InferenceModeSelector
-            modes={transcriptionModes}
-            activeMode={effectiveTranscriptionMode}
-            onSelect={handleTranscriptionModeSelect}
-          />
-
-          {effectiveTranscriptionMode === "providers" && renderTranscriptionPicker("cloud")}
-          {effectiveTranscriptionMode === "local" && renderTranscriptionPicker("local")}
+          {renderTranscriptionPicker("local")}
           {previewAvailable && renderPreviewToggle()}
 
-          {effectiveTranscriptionMode === "self-hosted" && (
+          {Boolean(0) && effectiveTranscriptionMode === "self-hosted" && (
             <SelfHostedPanel
               service="transcription"
               url={remoteTranscriptionUrl}
@@ -895,7 +913,7 @@ type LlmTab =
   | "noteFormatting"
   | "chatIntelligence";
 
-const SPEECH_TABS: SpeechTab[] = ["dictation", "noteRecording", "upload"];
+const SPEECH_TABS: SpeechTab[] = ["dictation"];
 const LLM_TABS: LlmTab[] = [
   "dictationCleanup",
   "dictationAgent",
@@ -1002,7 +1020,7 @@ function SpeechToTextTabs({
         description={t("settingsPage.speechToText.description")}
       />
       <ProviderTabs
-        providers={subTabs}
+        providers={subTabs.filter((item) => item.id === "dictation")}
         selectedId={tab}
         onSelect={(id) => setTab(id as SpeechTab)}
         renderIcon={(id) =>
@@ -1059,7 +1077,7 @@ function LlmsTabs({
         description={t("settingsPage.llms.description")}
       />
       <ProviderTabs
-        providers={subTabs}
+        providers={subTabs.filter((item) => item.id === "dictationCleanup")}
         selectedId={tab}
         onSelect={(id) => setTab(id as LlmTab)}
         renderIcon={(id) => {
@@ -1147,6 +1165,36 @@ function GpuDeviceSelector({ purpose }: { purpose: "transcription" | "intelligen
   );
 }
 
+function MouseButtonPassThroughRow() {
+  const { t } = useTranslation();
+  const [passThrough, setPassThrough] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    window.electronAPI?.getMouseButtonPassThrough?.().then((value) => {
+      if (!cancelled) setPassThrough(Boolean(value));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  return (
+    <SettingsPanelRow>
+      <SettingsRow
+        label={t("settingsPage.general.hotkey.mousePassThrough.title")}
+        description={t("settingsPage.general.hotkey.mousePassThrough.description")}
+      >
+        <Toggle
+          checked={passThrough}
+          onChange={(next) => {
+            setPassThrough(next);
+            window.electronAPI?.notifyMouseButtonPassThroughChanged?.(next);
+          }}
+        />
+      </SettingsRow>
+    </SettingsPanelRow>
+  );
+}
+
 export default function SettingsPage({
   activeSection = "general",
   onNavigateToSection,
@@ -1200,8 +1248,6 @@ export default function SettingsPage({
     setMeetingKey,
     meetingHotkeyLayoutMode,
     setMeetingHotkeyLayoutMode,
-    autoLearnCorrections,
-    setAutoLearnCorrections,
     updateTranscriptionSettings,
     updateCleanupSettings,
     cloudTranscriptionMode,
@@ -2026,22 +2072,29 @@ export default function SettingsPage({
             <Toggle checked={dictationSileroEnabled} onChange={setDictationSileroEnabled} />
           </SettingsRow>
         </SettingsPanelRow>
-        <SettingsPanelRow>
-          <SettingsRow
-            label={t("settingsPage.transcription.vad.toggles.noteRecording.title")}
-            description={t("settingsPage.transcription.vad.toggles.noteRecording.description")}
-          >
-            <Toggle checked={noteRecordingSileroEnabled} onChange={setNoteRecordingSileroEnabled} />
-          </SettingsRow>
-        </SettingsPanelRow>
-        <SettingsPanelRow>
-          <SettingsRow
-            label={t("settingsPage.transcription.vad.toggles.meeting.title")}
-            description={t("settingsPage.transcription.vad.toggles.meeting.description")}
-          >
-            <Toggle checked={meetingSileroEnabled} onChange={setMeetingSileroEnabled} />
-          </SettingsRow>
-        </SettingsPanelRow>
+        {Boolean(0) && (
+          <>
+            <SettingsPanelRow>
+              <SettingsRow
+                label={t("settingsPage.transcription.vad.toggles.noteRecording.title")}
+                description={t("settingsPage.transcription.vad.toggles.noteRecording.description")}
+              >
+                <Toggle
+                  checked={noteRecordingSileroEnabled}
+                  onChange={setNoteRecordingSileroEnabled}
+                />
+              </SettingsRow>
+            </SettingsPanelRow>
+            <SettingsPanelRow>
+              <SettingsRow
+                label={t("settingsPage.transcription.vad.toggles.meeting.title")}
+                description={t("settingsPage.transcription.vad.toggles.meeting.description")}
+              >
+                <Toggle checked={meetingSileroEnabled} onChange={setMeetingSileroEnabled} />
+              </SettingsRow>
+            </SettingsPanelRow>
+          </>
+        )}
         <SettingsPanelRow>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 w-full">
             <div className="space-y-1.5">
@@ -3115,34 +3168,38 @@ export default function SettingsPage({
                     />
                   </SettingsRow>
                 </SettingsPanelRow>
-                <SettingsPanelRow>
-                  <SettingsRow
-                    label={t("settingsPage.general.notifications.meetingDetection")}
-                    description={t(
-                      "settingsPage.general.notifications.meetingDetectionDescription"
-                    )}
-                  >
-                    <Toggle
-                      checked={notifyMeetingDetection}
-                      onChange={setNotifyMeetingDetection}
-                      disabled={!notificationsEnabled}
-                    />
-                  </SettingsRow>
-                </SettingsPanelRow>
-                <SettingsPanelRow>
-                  <SettingsRow
-                    label={t("settingsPage.general.notifications.calendarReminders")}
-                    description={t(
-                      "settingsPage.general.notifications.calendarRemindersDescription"
-                    )}
-                  >
-                    <Toggle
-                      checked={notifyCalendarReminders}
-                      onChange={setNotifyCalendarReminders}
-                      disabled={!notificationsEnabled}
-                    />
-                  </SettingsRow>
-                </SettingsPanelRow>
+                {Boolean(0) && (
+                  <>
+                    <SettingsPanelRow>
+                      <SettingsRow
+                        label={t("settingsPage.general.notifications.meetingDetection")}
+                        description={t(
+                          "settingsPage.general.notifications.meetingDetectionDescription"
+                        )}
+                      >
+                        <Toggle
+                          checked={notifyMeetingDetection}
+                          onChange={setNotifyMeetingDetection}
+                          disabled={!notificationsEnabled}
+                        />
+                      </SettingsRow>
+                    </SettingsPanelRow>
+                    <SettingsPanelRow>
+                      <SettingsRow
+                        label={t("settingsPage.general.notifications.calendarReminders")}
+                        description={t(
+                          "settingsPage.general.notifications.calendarRemindersDescription"
+                        )}
+                      >
+                        <Toggle
+                          checked={notifyCalendarReminders}
+                          onChange={setNotifyCalendarReminders}
+                          disabled={!notificationsEnabled}
+                        />
+                      </SettingsRow>
+                    </SettingsPanelRow>
+                  </>
+                )}
               </SettingsPanel>
             </div>
 
@@ -3413,30 +3470,6 @@ export default function SettingsPage({
                     onDeviceSelect={setSelectedMicDevice}
                     onMicWarmHoldSecondsChange={setMicWarmHoldSeconds}
                   />
-                </SettingsPanelRow>
-              </SettingsPanel>
-            </div>
-
-            {/* Dictionary */}
-            <div>
-              <SectionHeader
-                title={t("settingsPage.dictionary.autoLearnTitle", {
-                  defaultValue: "Auto-learn from corrections",
-                })}
-              />
-              <SettingsPanel>
-                <SettingsPanelRow>
-                  <SettingsRow
-                    label={t("settingsPage.dictionary.autoLearnTitle", {
-                      defaultValue: "Auto-learn from corrections",
-                    })}
-                    description={t("settingsPage.dictionary.autoLearnDescription", {
-                      defaultValue:
-                        "When you correct a transcription in the target app, the corrected word is automatically added to your dictionary.",
-                    })}
-                  >
-                    <Toggle checked={autoLearnCorrections} onChange={setAutoLearnCorrections} />
-                  </SettingsRow>
                 </SettingsPanelRow>
               </SettingsPanel>
             </div>
@@ -4020,112 +4053,119 @@ EOF`,
                       )}
                   </SettingsPanelRow>
                 )}
+                {getCachedPlatform() === "win32" && /MouseButton[45]/i.test(dictationKey) && (
+                  <MouseButtonPassThroughRow />
+                )}
               </SettingsPanel>
             </div>
 
-            {/* Voice Agent Hotkey */}
-            {agentAllowedByPolicy && (
-              <div>
-                <SectionHeader
-                  title={t("settingsPage.general.voiceAgentHotkey.title")}
-                  description={t("settingsPage.general.voiceAgentHotkey.description")}
-                />
-                <SettingsPanel>
-                  <SettingsPanelRow>
-                    <HotkeyListInput
-                      value={voiceAgentKey}
-                      onChange={(list) => commitAgentHotkey(setVoiceAgentKey, list)}
-                      onClear={() => commitAgentHotkey(setVoiceAgentKey, "")}
-                      validate={validateVoiceAgentHotkey}
-                      disabled={isAgentHotkeyCommitting}
-                      maxHotkeys={isUsingNativeShortcut ? 1 : undefined}
+            {Boolean(0) && (
+              <>
+                {/* Voice Agent Hotkey */}
+                {agentAllowedByPolicy && (
+                  <div>
+                    <SectionHeader
+                      title={t("settingsPage.general.voiceAgentHotkey.title")}
+                      description={t("settingsPage.general.voiceAgentHotkey.description")}
                     />
-                  </SettingsPanelRow>
-                </SettingsPanel>
-              </div>
+                    <SettingsPanel>
+                      <SettingsPanelRow>
+                        <HotkeyListInput
+                          value={voiceAgentKey}
+                          onChange={(list) => commitAgentHotkey(setVoiceAgentKey, list)}
+                          onClear={() => commitAgentHotkey(setVoiceAgentKey, "")}
+                          validate={validateVoiceAgentHotkey}
+                          disabled={isAgentHotkeyCommitting}
+                          maxHotkeys={isUsingNativeShortcut ? 1 : undefined}
+                        />
+                      </SettingsPanelRow>
+                    </SettingsPanel>
+                  </div>
+                )}
+
+                {/* Translation Hotkey */}
+                <div>
+                  <SectionHeader
+                    title={t("settingsPage.general.translationHotkey.title")}
+                    description={t("settingsPage.general.translationHotkey.description")}
+                  />
+                  <SettingsPanel>
+                    <SettingsPanelRow>
+                      <HotkeyListInput
+                        value={translationKey}
+                        onChange={(list) => commitAgentHotkey(setTranslationKey, list)}
+                        onClear={() => commitAgentHotkey(setTranslationKey, "")}
+                        validate={validateTranslationHotkey}
+                        disabled={isAgentHotkeyCommitting}
+                        maxHotkeys={isUsingNativeShortcut ? 1 : undefined}
+                      />
+                    </SettingsPanelRow>
+                  </SettingsPanel>
+                </div>
+
+                {/* Meeting Mode Hotkey */}
+                <div>
+                  <SectionHeader
+                    title={t("settingsPage.general.meetingHotkey.title")}
+                    description={t("settingsPage.general.meetingHotkey.description")}
+                  />
+                  <SettingsPanel>
+                    <SettingsPanelRow>
+                      <HotkeyListInput
+                        value={meetingKey}
+                        onChange={(list) => registerMeetingHotkey(list)}
+                        onClear={async (): Promise<boolean> => {
+                          const result = await window.electronAPI?.registerMeetingHotkey?.("");
+                          if (!result?.success) {
+                            showAlertDialog({
+                              title: t("hooks.hotkeyRegistration.titles.notRegistered"),
+                              description:
+                                result?.message ||
+                                t("hooks.hotkeyRegistration.errors.couldNotRegister"),
+                            });
+                            return false;
+                          }
+                          setMeetingKey("");
+                          return true;
+                        }}
+                        validate={validateMeetingHotkey}
+                        disabled={isMeetingHotkeyRegistering}
+                        maxHotkeys={isUsingNativeShortcut ? 1 : undefined}
+                      />
+                    </SettingsPanelRow>
+                    <SettingsPanelRow className="flex items-center justify-between gap-3 border-t border-border/70 dark:border-white/10">
+                      <span className="text-xs text-muted-foreground/80">
+                        {t("settingsPage.general.meetingHotkey.layoutLabel")}
+                      </span>
+                      <Select
+                        value={meetingHotkeyLayoutMode}
+                        onValueChange={(value) =>
+                          setMeetingHotkeyLayoutMode(value as "side-panel" | "full-width")
+                        }
+                      >
+                        <SelectTrigger className="h-7 w-36 text-xs rounded-lg px-2.5 [&>svg]:h-3 [&>svg]:w-3">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem
+                            value="full-width"
+                            className="text-xs py-1.5 ps-2.5 pe-7 rounded-md"
+                          >
+                            {t("settingsPage.general.meetingHotkey.layoutFullWidth")}
+                          </SelectItem>
+                          <SelectItem
+                            value="side-panel"
+                            className="text-xs py-1.5 ps-2.5 pe-7 rounded-md"
+                          >
+                            {t("settingsPage.general.meetingHotkey.layoutSidePanel")}
+                          </SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </SettingsPanelRow>
+                  </SettingsPanel>
+                </div>
+              </>
             )}
-
-            {/* Translation Hotkey */}
-            <div>
-              <SectionHeader
-                title={t("settingsPage.general.translationHotkey.title")}
-                description={t("settingsPage.general.translationHotkey.description")}
-              />
-              <SettingsPanel>
-                <SettingsPanelRow>
-                  <HotkeyListInput
-                    value={translationKey}
-                    onChange={(list) => commitAgentHotkey(setTranslationKey, list)}
-                    onClear={() => commitAgentHotkey(setTranslationKey, "")}
-                    validate={validateTranslationHotkey}
-                    disabled={isAgentHotkeyCommitting}
-                    maxHotkeys={isUsingNativeShortcut ? 1 : undefined}
-                  />
-                </SettingsPanelRow>
-              </SettingsPanel>
-            </div>
-
-            {/* Meeting Mode Hotkey */}
-            <div>
-              <SectionHeader
-                title={t("settingsPage.general.meetingHotkey.title")}
-                description={t("settingsPage.general.meetingHotkey.description")}
-              />
-              <SettingsPanel>
-                <SettingsPanelRow>
-                  <HotkeyListInput
-                    value={meetingKey}
-                    onChange={(list) => registerMeetingHotkey(list)}
-                    onClear={async (): Promise<boolean> => {
-                      const result = await window.electronAPI?.registerMeetingHotkey?.("");
-                      if (!result?.success) {
-                        showAlertDialog({
-                          title: t("hooks.hotkeyRegistration.titles.notRegistered"),
-                          description:
-                            result?.message ||
-                            t("hooks.hotkeyRegistration.errors.couldNotRegister"),
-                        });
-                        return false;
-                      }
-                      setMeetingKey("");
-                      return true;
-                    }}
-                    validate={validateMeetingHotkey}
-                    disabled={isMeetingHotkeyRegistering}
-                    maxHotkeys={isUsingNativeShortcut ? 1 : undefined}
-                  />
-                </SettingsPanelRow>
-                <SettingsPanelRow className="flex items-center justify-between gap-3 border-t border-border/70 dark:border-white/10">
-                  <span className="text-xs text-muted-foreground/80">
-                    {t("settingsPage.general.meetingHotkey.layoutLabel")}
-                  </span>
-                  <Select
-                    value={meetingHotkeyLayoutMode}
-                    onValueChange={(value) =>
-                      setMeetingHotkeyLayoutMode(value as "side-panel" | "full-width")
-                    }
-                  >
-                    <SelectTrigger className="h-7 w-36 text-xs rounded-lg px-2.5 [&>svg]:h-3 [&>svg]:w-3">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem
-                        value="full-width"
-                        className="text-xs py-1.5 ps-2.5 pe-7 rounded-md"
-                      >
-                        {t("settingsPage.general.meetingHotkey.layoutFullWidth")}
-                      </SelectItem>
-                      <SelectItem
-                        value="side-panel"
-                        className="text-xs py-1.5 ps-2.5 pe-7 rounded-md"
-                      >
-                        {t("settingsPage.general.meetingHotkey.layoutSidePanel")}
-                      </SelectItem>
-                    </SelectContent>
-                  </Select>
-                </SettingsPanelRow>
-              </SettingsPanel>
-            </div>
           </div>
         );
 

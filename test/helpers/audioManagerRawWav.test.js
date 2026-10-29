@@ -82,22 +82,22 @@ async function loadFallbackManager(t, transcribeKey) {
   return { manager, uploaded: () => uploaded };
 }
 
-test("a failed Parakeet decode falls back to the cloud with the WebM, never the WAV", async (t) => {
+test("a failed Parakeet decode never uploads the WebM or WAV to the cloud", async (t) => {
   const { manager, uploaded } = await loadFallbackManager(t, "transcribeLocalParakeet");
 
-  const result = await manager.processWithLocalParakeet(webm(), "orukeet-v0.1.0", {
-    rawWav: wav(),
-  });
-
-  assert.equal(result.source, "openai-fallback");
-  assert.equal(uploaded().type, "audio/webm");
+  await assert.rejects(
+    manager.processWithLocalParakeet(webm(), "orukeet-v0.1.0", { rawWav: wav() }),
+    /Parakeet failed: engine down/
+  );
+  assert.equal(uploaded(), null);
 });
 
-test("a failed whisper decode falls back to the cloud with the WebM, never the WAV", async (t) => {
+test("a failed whisper decode never uploads the WebM or WAV to the cloud", async (t) => {
   const { manager, uploaded } = await loadFallbackManager(t, "transcribeLocalWhisper");
 
-  const result = await manager.processWithLocalWhisper(webm(), "base", { rawWav: wav() });
-
-  assert.equal(result.source, "openai-fallback");
-  assert.equal(uploaded().type, "audio/webm");
+  await assert.rejects(
+    manager.processWithLocalWhisper(webm(), "base", { rawWav: wav() }),
+    /Local Whisper failed: engine down/
+  );
+  assert.equal(uploaded(), null);
 });

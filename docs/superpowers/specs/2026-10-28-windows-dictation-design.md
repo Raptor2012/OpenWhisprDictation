@@ -1,0 +1,9 @@
+# Windows local dictation design
+
+The approved direction is a separate, compact Windows dictation application derived from OpenWhispr, preserving its license and the existing installation. It uses the existing local speech and cleanup components where practical, with no cloud transcription or cleanup. An independent native rewrite was considered but rejected unless the upstream architecture proves a blocker; configuring the full existing app was also rejected.
+
+The app must give immediate, accurate ready, capturing, processing, result and error feedback, with asynchronous audio cues. It supports configurable Windows mouse activation and keyboard fallback, hold and toggle modes, microphone selection, continuous transcription where supported, and automatic paste into the intended writable field or a clipboard and copyable preview fallback. No animation or sound may delay capture or paste. Do not silently keep the microphone recording between sessions.
+
+English is primary, with occasional Hindi and names. Cleanup should preserve meaning while handling punctuation, fillers, repetition and obvious self-corrections. Editable vocabulary includes preferred spelling and spoken aliases; learning requires explicit user confirmation and supports review and removal. No arbitrary surrounding text collection. Isolate application identity and user data from the existing installation and preserve shared model files until a replacement is measured and validated.
+
+Remove unrelated meeting, notes, assistant, calendar, integration, account and cloud activity, not merely navigation, where technically feasible. Measure real capture and final paste latency on the user's machine, and compare available local speech and cleanup options on consistent samples. Validate offline behavior, input rebinding, races, paste safety, microphone changes and startup/resume. Report unverified behavior and sample limitations honestly. Deliver a separately runnable Windows artifact.

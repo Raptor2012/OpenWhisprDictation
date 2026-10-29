@@ -18,6 +18,11 @@
 static HHOOK g_hook = NULL;
 static DWORD g_targetVk = 0;
 static BOOL g_isKeyDown = FALSE;
+static DWORD g_mouseButton = 0;
+// When set, the bound side button is consumed so its default action (browser
+// Back/Forward) does not fire while it drives dictation. Other buttons are
+// never touched.
+static BOOL g_swallowMouseButton = FALSE;
 
 // Modifier key requirements
 static BOOL g_requireCtrl = FALSE;
@@ -275,6 +280,29 @@ LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
     return CallNextHookEx(g_hook, nCode, wParam, lParam);
 }
 
+// Side buttons only: leave primary, secondary and middle clicks untouched.
+// Pass every event to the next hook so ordinary mouse behavior is preserved.
+LRESULT CALLBACK LowLevelMouseProc(int nCode, WPARAM wParam, LPARAM lParam) {
+    if (nCode == HC_ACTION && (wParam == WM_XBUTTONDOWN || wParam == WM_XBUTTONUP)) {
+        MSLLHOOKSTRUCT* mouse = (MSLLHOOKSTRUCT*)lParam;
+        DWORD button = HIWORD(mouse->mouseData);
+        if (button == g_mouseButton) {
+            if (wParam == WM_XBUTTONDOWN && !g_isKeyDown) {
+                g_isKeyDown = TRUE;
+                printf("KEY_DOWN\n");
+                fflush(stdout);
+            } else if (wParam == WM_XBUTTONUP && g_isKeyDown) {
+                g_isKeyDown = FALSE;
+                printf("KEY_UP\n");
+                fflush(stdout);
+            }
+            // Injected events (e.g. from an automation tool) are never consumed.
+            if (g_swallowMouseButton && !(mouse->flags & LLMHF_INJECTED)) return 1;
+        }
+    }
+    return CallNextHookEx(g_hook, nCode, wParam, lParam);
+}
+
 BOOL WINAPI ConsoleHandler(DWORD signal) {
     if (signal == CTRL_C_EVENT || signal == CTRL_BREAK_EVENT || signal == CTRL_CLOSE_EVENT) {
         if (g_hook) {
@@ -350,25 +378,33 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
+    if (_stricmp(argv[1], "MouseButton4") == 0) g_mouseButton = XBUTTON1;
+    if (_stricmp(argv[1], "MouseButton5") == 0) g_mouseButton = XBUTTON2;
+    for (int i = 2; i < argc; i++) {
+        if (strcmp(argv[i], "--swallow") == 0) g_swallowMouseButton = TRUE;
+    }
     g_targetVk = ParseCompoundHotkey(argv[1]);
     if (g_targetVk == 0 && (g_requireCtrl || g_requireAlt || g_requireShift || g_requireWin)) {
         g_useModifiersOnly = TRUE;
     }
 
-    if (g_targetVk == 0 && !g_useModifiersOnly) {
+    if (g_targetVk == 0 && !g_useModifiersOnly && !g_mouseButton) {
         fprintf(stderr, "Error: Invalid key '%s'\n", argv[1]);
         return 1;
     }
 
     // Log what we're listening for
-    fprintf(stderr, "Listening for: %s (VK=0x%02X, Ctrl=%d, Alt=%d, Shift=%d, Win=%d, ModOnly=%d)\n",
-            argv[1], g_targetVk, g_requireCtrl, g_requireAlt, g_requireShift, g_requireWin, g_useModifiersOnly);
+    fprintf(stderr, "Listening for: %s (VK=0x%02X, Ctrl=%d, Alt=%d, Shift=%d, Win=%d, ModOnly=%d, Mouse=%lu, Swallow=%d)\n",
+            argv[1], g_targetVk, g_requireCtrl, g_requireAlt, g_requireShift, g_requireWin, g_useModifiersOnly,
+            g_mouseButton, g_swallowMouseButton);
 
     // Set up console handler for clean shutdown
     SetConsoleCtrlHandler(ConsoleHandler, TRUE);
 
     // Install the low-level keyboard hook
-    g_hook = SetWindowsHookEx(WH_KEYBOARD_LL, LowLevelKeyboardProc, NULL, 0);
+    g_hook = g_mouseButton
+        ? SetWindowsHookEx(WH_MOUSE_LL, LowLevelMouseProc, NULL, 0)
+        : SetWindowsHookEx(WH_KEYBOARD_LL, LowLevelKeyboardProc, NULL, 0);
     if (!g_hook) {
         fprintf(stderr, "Error: Failed to install keyboard hook (error %lu)\n", GetLastError());
         return 1;

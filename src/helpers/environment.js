@@ -40,6 +40,7 @@ const PERSISTED_KEYS = [
   "MEETING_KEY",
   "ACTIVATION_MODE",
   "FLOATING_ICON_AUTO_HIDE",
+  "MOUSE_BUTTON_PASSTHROUGH",
   "PANEL_START_POSITION",
   "START_MINIMIZED",
   "UI_LANGUAGE",
@@ -445,6 +446,16 @@ class EnvironmentManager {
 
   saveFloatingIconAutoHide(enabled) {
     const result = this._saveKey("FLOATING_ICON_AUTO_HIDE", String(enabled));
+    this.saveAllKeysToEnvFile().catch(() => {});
+    return result;
+  }
+
+  getMouseButtonPassThrough() {
+    return this._getKey("MOUSE_BUTTON_PASSTHROUGH") === "true";
+  }
+
+  saveMouseButtonPassThrough(enabled) {
+    const result = this._saveKey("MOUSE_BUTTON_PASSTHROUGH", String(Boolean(enabled)));
     this.saveAllKeysToEnvFile().catch(() => {});
     return result;
   }

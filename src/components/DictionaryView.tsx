@@ -27,10 +27,17 @@ import { getAgentName } from "../utils/agentName";
 import { parseDictionaryImportText } from "../helpers/dictionaryImport";
 import { getDictionaryHintWords } from "../utils/snippets";
 import { WHISPER_DECODER_PROMPT_CHARS } from "../utils/dictionaryPromptCap";
+import {
+  addAlias,
+  aliasesForWord,
+  removeAlias,
+  removeWordAliases,
+  retargetAliases,
+} from "../utils/vocabularyAliases";
 
 export default function DictionaryView() {
   const { t } = useTranslation();
-  const { customDictionary, updateCustomDictionary, snippets } = useSettings();
+  const { customDictionary, updateCustomDictionary, snippets, setSnippets } = useSettings();
   const agentName = getAgentName();
   const { toast } = useToast();
 
@@ -41,6 +48,9 @@ export default function DictionaryView() {
   const [editingWord, setEditingWord] = useState<string | null>(null);
   const [editValue, setEditValue] = useState("");
   const [confirmClear, setConfirmClear] = useState(false);
+  // "Heard as" aliases: snippets whose replacement is the dictionary word.
+  const [aliasEditingWord, setAliasEditingWord] = useState<string | null>(null);
+  const [aliasValue, setAliasValue] = useState("");
   const addInputRef = useRef<HTMLInputElement>(null);
 
   const pendingImportCount = useMemo(() => parseDictionaryImportText(bulkText).length, [bulkText]);
@@ -101,8 +111,23 @@ export default function DictionaryView() {
   const handleRemove = useCallback(
     (word: string) => {
       updateCustomDictionary({ remove: [word] });
+      const next = removeWordAliases(snippets, word);
+      if (next.length !== snippets.length) setSnippets(next);
     },
-    [updateCustomDictionary]
+    [updateCustomDictionary, snippets, setSnippets]
+  );
+
+  const commitAlias = useCallback(
+    (word: string) => {
+      const alias = aliasValue.trim();
+      if (alias) {
+        const next = addAlias(snippets, alias, word);
+        if (next !== snippets) setSnippets(next);
+      }
+      setAliasEditingWord(null);
+      setAliasValue("");
+    },
+    [aliasValue, snippets, setSnippets]
   );
 
   const startEdit = useCallback((word: string) => {
@@ -118,9 +143,10 @@ export default function DictionaryView() {
     );
     if (trimmed && trimmed !== editingWord && !isDuplicate) {
       updateCustomDictionary({ add: [trimmed], remove: [editingWord] });
+      setSnippets(retargetAliases(snippets, editingWord, trimmed));
     }
     setEditingWord(null);
-  }, [editingWord, editValue, customDictionary, updateCustomDictionary]);
+  }, [editingWord, editValue, customDictionary, updateCustomDictionary, snippets, setSnippets]);
 
   const handleExport = useCallback(async () => {
     const result = await window.electronAPI?.exportDictionary?.(customDictionary);
@@ -325,8 +351,9 @@ export default function DictionaryView() {
                   return (
                     <li
                       key={word}
-                      className="group flex items-center gap-2 h-9 border-b border-foreground/4 dark:border-white/10 last:border-b-0"
+                      className="group flex flex-col justify-center gap-1 py-2 border-b border-foreground/4 dark:border-white/10 last:border-b-0"
                     >
+                      <div className="flex items-center gap-2 h-6">
                       {isEditing ? (
                         <Input
                           dir="auto"
@@ -363,6 +390,53 @@ export default function DictionaryView() {
                           </button>
                         </div>
                       )}
+                      </div>
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        {aliasesForWord(word, snippets).map((alias) => (
+                          <span
+                            key={alias}
+                            dir="auto"
+                            className="inline-flex items-center gap-1 rounded-full bg-muted px-2 py-0.5 text-[11px] text-foreground/60"
+                          >
+                            {alias}
+                            <button
+                              onClick={() => setSnippets(removeAlias(snippets, alias))}
+                              aria-label={t("dictionary.aliases.remove", { alias })}
+                              className="text-foreground/45 hover:text-destructive/70"
+                            >
+                              <X size={9} strokeWidth={2} />
+                            </button>
+                          </span>
+                        ))}
+                        {aliasEditingWord === word ? (
+                          <Input
+                            dir="auto"
+                            autoFocus
+                            value={aliasValue}
+                            onChange={(e) => setAliasValue(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") commitAlias(word);
+                              if (e.key === "Escape") {
+                                setAliasEditingWord(null);
+                                setAliasValue("");
+                              }
+                            }}
+                            onBlur={() => commitAlias(word)}
+                            placeholder={t("dictionary.aliases.placeholder")}
+                            className="h-6 w-44 text-[11px]"
+                          />
+                        ) : (
+                          <button
+                            onClick={() => {
+                              setAliasEditingWord(word);
+                              setAliasValue("");
+                            }}
+                            className="text-[11px] text-foreground/45 transition-colors hover:text-primary"
+                          >
+                            + {t("dictionary.aliases.add")}
+                          </button>
+                        )}
+                      </div>
                     </li>
                   );
                 })}

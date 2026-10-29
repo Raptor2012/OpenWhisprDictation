@@ -2632,6 +2632,8 @@ declare global {
       // Activation mode persistence (file-based for reliable startup)
       getActivationMode?: () => Promise<"tap" | "push">;
       saveActivationMode?: (mode: "tap" | "push") => Promise<void>;
+      getMouseButtonPassThrough?: () => Promise<boolean>;
+      notifyMouseButtonPassThroughChanged?: (enabled: boolean) => void;
 
       // Debug logging
       getLogLevel?: () => Promise<string>;

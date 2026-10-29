@@ -238,7 +238,10 @@ test("Windows refuses listener-only hotkeys when the key listener is missing", a
       "OpenWhispr's key listener isn't available."
     );
     assert.equal(await manager.setActivationMode("push"), false);
+    // The existing missing-listener fallback is retained. The derivative's
+    // ordinary default chord is also usable in Tap without that listener.
     assert.equal(manager.getEffectiveDefaultHotkey(), "F8");
+    assert.equal(manager.setupShortcuts("Control+Alt+Space", callback).success, true);
     const refused = manager.setupShortcuts("Control+Super", callback);
     assert.match(refused.error, /Windows key listener/);
     assert.equal(refused.reason, "native_listener_unavailable");
@@ -247,7 +250,7 @@ test("Windows refuses listener-only hotkeys when the key listener is missing", a
 
     manager.nativeListenerProbe = () => ({ available: true });
     assert.equal(manager.supportsPushToTalk("F8"), true);
-    assert.equal(manager.getEffectiveDefaultHotkey(), "Control+Super");
+    assert.equal(manager.getEffectiveDefaultHotkey(), "Control+Alt+Space");
     assert.equal(manager.setupShortcuts("Control+Super", callback).success, true);
     assert.equal(manager.setupShortcuts("RightControl", callback).success, true);
   });

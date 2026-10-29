@@ -15,7 +15,7 @@ const HOTKEY_REGISTRATION_DELAY_MS = 1000;
 const FALLBACK_HOTKEYS = ["F8", "F9", "Control+Shift+Space"];
 
 // Default hotkey for dictation if no saved value exists
-const DEFAULT_HOTKEY = "Control+Super";
+const DEFAULT_HOTKEY = process.platform === "win32" ? "Control+Alt+Space" : "Control+Super";
 
 // Dictation has a dedicated native path because it also supports push-to-talk.
 const LINUX_NATIVE_TAP_SLOTS = new Set(["meeting", "voiceAgent", "translation"]);
@@ -114,7 +114,7 @@ class HotkeyManager extends EventEmitter {
     // Each slot holds a list of hotkeys (#936). `accelerators` mirrors `hotkeys`
     // index-for-index (null for native-listener entries).
     this.slots = new Map();
-    const defaultDictation = process.platform === "darwin" ? "GLOBE" : "Control+Super";
+    const defaultDictation = process.platform === "darwin" ? "GLOBE" : DEFAULT_HOTKEY;
     this.slots.set("dictation", { hotkeys: [defaultDictation], callback: null, accelerators: [] });
     this.isInitialized = false;
     this.isListeningMode = false;
@@ -517,7 +517,11 @@ class HotkeyManager extends EventEmitter {
     const keys = [];
     for (const [slotName, slot] of this.slots) {
       for (const hotkey of slot.hotkeys ?? []) {
-        if (!hotkey || isGlobeLikeHotkey(hotkey) || isMouseButtonHotkey(hotkey)) continue;
+        if (!hotkey || isGlobeLikeHotkey(hotkey)) continue;
+        if (isMouseButtonHotkey(hotkey)) {
+          if (process.platform === "win32") keys.push(hotkey);
+          continue;
+        }
         const pushToTalk = slotName === "dictation" && activationMode === "push";
         if (pushToTalk || isModifierOnlyHotkey(hotkey) || isRightSideModifier(hotkey)) {
           keys.push(hotkey);
@@ -729,8 +733,12 @@ class HotkeyManager extends EventEmitter {
   _registerSingleHotkey(hotkey, callback) {
     try {
       if (isMouseButtonHotkey(hotkey)) {
-        if (process.platform !== "darwin") {
+        if (process.platform !== "darwin" && process.platform !== "win32") {
           return { success: false, hotkey, error: i18nMain.t("hotkey.errors.mouseButtonOnlyMac") };
+        }
+        if (process.platform === "win32") {
+          const unavailable = this._nativeListenerUnavailable(hotkey);
+          if (unavailable) return unavailable;
         }
         debugLogger.log(
           `[HotkeyManager] Mouse button "${hotkey}" set - using macOS native listener`

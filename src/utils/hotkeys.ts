@@ -201,6 +201,7 @@ export function isCompoundHotkey(hotkey: string): boolean {
  */
 export function getDefaultHotkey(): string {
   const platform = getPlatform();
+  if (platform === "win32") return "Control+Alt+Space";
   return platform === "darwin" ? "GLOBE" : "Control+Super";
 }
 

@@ -22,7 +22,6 @@ import {
   shouldShowByokStreamingPreview,
 } from "../utils/transcriptionPreview";
 import { canStartDictation } from "../utils/dictationReadiness";
-import { waitForVisualFrames } from "../utils/visualFrame";
 import { resolveLifecycleInputKind } from "../helpers/dictationRouting";
 import { createAssistantResponseDelivery } from "../helpers/assistantResponseDelivery";
 import { recordCleanupFailure } from "../stores/cleanupFailureStore";
@@ -170,12 +169,9 @@ export const useAudioRecording = (toast, options = {}) => {
         // Preserve the requested identity while Windows is still opening the
         // microphone; AudioManager confirms the same value once recording.
         setIsAssistantVoice(voiceAgentRequested);
-        await waitForVisualFrames();
-        if (preparationGeneration !== preparationGenerationRef.current) return false;
-
-        // Start acquisition only after the compact thinking frame has reached
-        // the compositor. startRecording() joins this prepared capture, so the
-        // device still opens exactly once.
+        // Open the device immediately. React can paint the preparing state
+        // concurrently; hidden-window animation frames must never gate capture.
+        // startRecording() joins this capture, so the device opens only once.
         void audioManagerRef.current.prepareMicCapture?.();
 
         // The floating dictation panel only takes focus while the assistant panel
@@ -188,6 +184,7 @@ export const useAudioRecording = (toast, options = {}) => {
         } catch (error) {
           logger.warn("Failed to refresh dictation target", { error: error?.message });
         }
+        if (preparationGeneration !== preparationGenerationRef.current) return false;
 
         demoKindRef.current = getOnboardingDemoKind(voiceAgentRequested);
         audioManagerRef.current.setVoiceAgentRequested(voiceAgentRequested);
@@ -329,9 +326,7 @@ export const useAudioRecording = (toast, options = {}) => {
       window.electronAPI?.unregisterCancelHotkey?.();
       setIsPreparing(false);
       setIsStopping(true);
-      // Contract to the stable thinking state before MediaRecorder/streaming
-      // finalization can occupy the renderer on slower Windows machines.
-      await waitForVisualFrames();
+      // Release capture immediately; rendering the thinking state is concurrent.
 
       if (currentState.isStreaming || currentState.isStreamingStartInProgress) {
         void playStopCue();
@@ -832,7 +827,19 @@ export const useAudioRecording = (toast, options = {}) => {
                 ...pasteOptions,
               })
             );
-            if (pasteOutcome.reason === "modifiers-held") {
+            if (pasteOutcome.reason === "target-unverified") {
+              await reportHeldBackPaste(
+                "target-unverified",
+                {
+                  title: t("dictationApp.unverifiedPaste.title"),
+                  description: t("dictationApp.unverifiedPaste.description"),
+                  descriptionClipboardFailed: t(
+                    "dictationApp.unverifiedPaste.descriptionClipboardFailed"
+                  ),
+                },
+                generation
+              );
+            } else if (pasteOutcome.reason === "modifiers-held") {
               await reportHeldBackPaste(
                 "modifiers-held",
                 {
@@ -1066,15 +1073,13 @@ export const useAudioRecording = (toast, options = {}) => {
     const disposePrepare = window.electronAPI.onPrepareDictation?.(async (options) => {
       if (!audioManagerRef.current || startLockRef.current) return;
       if (!canStartDictation(audioManagerRef.current.getState())) return;
-      const generation = ++preparationGenerationRef.current;
+      preparationGenerationRef.current += 1;
       setIsAssistantVoice(false);
       setIsPreparing(true);
       // The prepare event precedes the flag-setting start, so the kind must come
       // from the payload — the audioManager flags still describe the PREVIOUS
       // recording at this point.
       reportLifecycle("preparing", options?.inputKind);
-      await waitForVisualFrames();
-      if (generation !== preparationGenerationRef.current || startLockRef.current) return;
       void audioManagerRef.current.prepareMicCapture?.();
     });
 

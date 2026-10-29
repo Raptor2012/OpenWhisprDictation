@@ -64,7 +64,7 @@ function supportsSelectionCopy(binaryPath) {
       stdio: "pipe",
       windowsHide: true,
     });
-    return result.status === 0 && result.stdout.toString().includes("selection-copy-v1");
+    return result.status === 0 && result.stdout.toString().includes("selection-copy-v1") && result.stdout.toString().includes("safe-paste-v1");
   } catch {
     return false;
   }
@@ -132,21 +132,21 @@ function tryCompile() {
       check: { command: "cl", args: [] },
       useShell: true,
       getCommand: () =>
-        `cl /O2 /nologo ${quotePath(cSource)} /Fe:${quotePath(outputBinary)} user32.lib`,
+        `cl /O2 /nologo ${quotePath(cSource)} /Fe:${quotePath(outputBinary)} user32.lib ole32.lib oleaut32.lib`,
     },
     {
       name: "MinGW-w64",
       check: { command: "gcc", args: ["--version"] },
       useShell: false,
       command: "gcc",
-      args: ["-O2", cSource, "-o", outputBinary, "-luser32"],
+      args: ["-O2", cSource, "-o", outputBinary, "-luser32", "-lole32", "-loleaut32", "-luuid"],
     },
     {
       name: "Clang",
       check: { command: "clang", args: ["--version"] },
       useShell: false,
       command: "clang",
-      args: ["-O2", cSource, "-o", outputBinary, "-luser32"],
+      args: ["-O2", cSource, "-o", outputBinary, "-luser32", "-lole32", "-loleaut32", "-luuid"],
     },
   ];
 

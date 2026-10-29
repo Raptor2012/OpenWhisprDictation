@@ -138,11 +138,11 @@ export default function SettingsModal({ open, onOpenChange, initialSection }: Se
         group: t("settingsModal.groups.system"),
       },
     ];
-    return isSignedIn ? items : items.filter((item) => item.id !== "workspace");
-  }, [t, isSignedIn]);
+    return items.filter((item) => ["general", "hotkeys", "speechToText", "llms"].includes(item.id));
+  }, [t]);
 
   const resolveSection = (section: string | undefined): SettingsSectionType => {
-    if (!section) return "account";
+    if (!section) return "general";
     return (SECTION_ALIASES[section] ?? section) as SettingsSectionType;
   };
 

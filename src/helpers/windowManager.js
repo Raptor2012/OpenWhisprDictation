@@ -118,6 +118,7 @@ class WindowManager {
     this.winPushState = null;
     this._cachedActivationMode = "tap";
     this._floatingIconAutoHide = false;
+    this._mouseButtonPassThrough = false;
     this._panelStartPosition = "bottom-right";
     this._activeHorizontalDirection = null;
     this._isDictatingToggle = false;
@@ -1346,10 +1347,22 @@ class WindowManager {
         : []
       : nativeListenerKeys;
     if (process.platform === "win32" && this.windowsKeyManager) {
-      this.windowsKeyManager.setKeys(keys);
+      this.windowsKeyManager.setKeys(keys, {
+        swallowMouseButtons: !this._mouseButtonPassThrough,
+      });
     } else if (process.platform === "linux" && this.linuxKeyManager) {
       this.linuxKeyManager.setKeys(keys);
     }
+  }
+
+  // Windows: when off (default), a side button bound to dictation is consumed
+  // by the low-level hook so apps never see its Back/Forward action.
+  setMouseButtonPassThrough(enabled) {
+    this._mouseButtonPassThrough = Boolean(enabled);
+  }
+
+  getMouseButtonPassThrough() {
+    return this._mouseButtonPassThrough;
   }
 
   setFloatingIconAutoHide(enabled) {

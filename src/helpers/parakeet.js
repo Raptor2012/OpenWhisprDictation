@@ -88,7 +88,7 @@ class ParakeetManager {
     try {
       this.isInitialized = true;
 
-      await cleanupStaleDownloads(this.getModelsDir());
+      // This derivative shares model files with the installed app; do not clean its downloads.
 
       await this.logDependencyStatus();
 

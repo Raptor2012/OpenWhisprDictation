@@ -18,13 +18,30 @@ def engine(**fields):
     defaults = dict(asr_pending=0, panel_extra=False, review=None, delivery='immediate', follow_active=False, active_thread=None, dock=False, dict_state='', expanded=False, hovered=False, pin_until=0.0, pending=None, state='ready', confirmed=False,
                     sent_at=0.0, error_at=0.0, t3_min=False, bubble=None, bubble_until=0.0, bubble_seq=0,
                     bubble_run=None, silent=deque(), meta={}, dict_preview_text='', dict_preview_until=0,
-                    dict_preview_session=0, dict_preview=None)
+                    dict_preview_session=0, dict_preview=None, dictating=False, mic_level=0)
     defaults.update(fields)
     e.__dict__.update(defaults)
     return e
 
 
 class VisibilityTests(unittest.TestCase):
+    def test_a_previous_completion_cannot_replace_the_current_held_preview(self):
+        e=engine(dictating=True,dict_state='dictating',dict_preview_text='I am still speaking',
+                 env_read_at=float('inf'),manage_pill=Mock(),
+                 dict_watch=Mock(poll=lambda:[{'status':'completed','text':'Previous dictation','error':''}]))
+        e.dictation_tick()
+        self.assertEqual('dictating',e.dict_state)
+        self.assertEqual('I am still speaking',e.dictation_bubble(time.monotonic())['text'])
+        self.assertTrue(e.dictation_bubble(time.monotonic())['live'])
+
+    def test_short_voice_peaks_survive_between_ui_polls_then_decay(self):
+        e=engine(mic_level=0)
+        e.mic_callback((1600).to_bytes(2,'little',signed=True)*t3_voice.FRAME,t3_voice.FRAME,None,None)
+        peak=e.mic_level
+        e.mic_callback(bytes(t3_voice.FRAME*2),t3_voice.FRAME,None,None)
+        self.assertGreater(e.mic_level,peak*.7)
+        self.assertLess(e.mic_level,peak)
+
     def test_preview_never_delivers_and_release_rejects_late_recognition(self):
         preview=t3_voice.DictationPreview()
         e=engine(dict_preview=preview,notice=queue.Queue(),dispatch=Mock(),dict_state='dictating')

@@ -598,10 +598,11 @@ class Engine:
         if len(frame) != FRAME * 2:
             return
         samples = np.frombuffer(frame, dtype='<i2').astype('f4') / 32768
-        self.mic_level = float(np.sqrt(np.mean(samples * samples)))
+        level = float(np.sqrt(np.mean(samples * samples)))
+        self.mic_level = max(level, self.mic_level * .86)  # retain short peaks between 50 ms UI polls
         # Display-only preview; OpenWhispr still supplies the only deliverable transcript.
         if self.dict_preview:
-            self.dict_preview.push(frame, voiced=self.mic_level > .004)
+            self.dict_preview.push(frame, voiced=level > .004)
 
     def preview_audio(self, session, audio):
         started = time.perf_counter()
@@ -617,6 +618,7 @@ class Engine:
         if accepted and not self.review:
             self.dict_preview_text = accepted[-1200:]
             self.meta['lastPreviewMs'] = elapsed
+            self.meta['previewUpdates'] = self.meta.get('previewUpdates', 0) + 1
             self.meta.pop('previewError', None)
         if error:
             self.meta['previewError'] = error
@@ -1011,7 +1013,8 @@ class Engine:
         except Exception as exc:
             self.meta['dictationWatchError'] = type(exc).__name__
             rows = []
-        if rows and self.dict_state in ('dictating', 'processing'):
+        # An earlier cleanup can finish during the next held recording. It is not this turn's end.
+        if rows and not self.dictating and self.dict_state == 'processing':
             last = rows[-1]
             if last['status'] == 'completed' and last['text']:
                 self.dict_state, self.dict_until = 'done', now + 0.9

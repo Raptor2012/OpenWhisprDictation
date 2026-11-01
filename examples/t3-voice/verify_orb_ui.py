@@ -87,7 +87,7 @@ def run():
               render();
             })()''' % json.dumps([state,dock,panel]))
             time.sleep(.6 if panel else .25)
-            ids = (['bar','barOrb','wave','barMic','barMaeve','barExpand'] if dock else ['muteMic','muteMaeve','toBar'])
+            ids = (['bar','barOrb','wave','barMic','barMaeve','barExpand'] if dock else ['muteMic','muteMaeve','toBar','orbWave'])
             ids += {'card':['card','delivery','fQuit'], 'menu':['card','menu'], 'list':['card','list'],
                     'bubble':['bubble'], 'live':['bubble'], 'processing-preview':['bubble'],
                     'review':['review','reviewSend'], 'failed-review':['review','reviewSend']}.get(panel,[])
@@ -115,6 +115,54 @@ def run():
         if (not all(preview[key] for key in ('revised','liveLabel','processingLabel'))
                 or preview['finalText']!='Final cleaned words.' or preview['errors']):
             report['failures'].append({'preview':preview})
+        words = window.evaluate_js('''(()=>{
+          S.bubble={id:'animated-words',who:'you',live:true,text:'Please inspect this'};tickBubble(.1);
+          const first=btext.querySelector('.word');
+          S.bubble.text='Please inspect this issue';tickBubble(.1);
+          const appended=btext.querySelector('.word:last-of-type');
+          const stablePrefix=!!first&&first===btext.querySelector('.word');
+          S.bubble.text='Please inspect that issue';tickBubble(.1);
+          return {stablePrefix,animated:!!appended&&getComputedStyle(appended).animationName==='ink',
+            revised:btext.textContent==='Please inspect that issue',errors:qaErrors.slice()};
+        })()''')
+        report['words']=words
+        if not all(words[key] for key in ('stablePrefix','animated','revised')) or words['errors']:
+            report['failures'].append({'words':words})
+        window.evaluate_js('''S.review=null;S.expanded=false;applyExpanded(false);S.dock=false;S.state='dictating';S.mic=0;render();''')
+        resize(340,300)
+        window.evaluate_js('''window.qaWaveHeight=()=>{
+          const canvas=document.getElementById('orbWave');if(!canvas)return 0;
+          const pixels=canvas.getContext('2d').getImageData(0,0,canvas.width,canvas.height).data;
+          let top=canvas.height,bottom=-1;
+          for(let y=0;y<canvas.height;y++)for(let x=0;x<canvas.width;x++)if(pixels[(y*canvas.width+x)*4+3]>20){top=Math.min(top,y);bottom=Math.max(bottom,y);}
+          return Math.max(0,bottom-top+1);
+        };''')
+        time.sleep(1.1)
+        window.evaluate_js('window.qaQuietRadius=gl.getUniform(prog,U.uR);window.qaQuietWave=qaWaveHeight();S.mic=.02;render();')
+        time.sleep(.8)
+        audio = window.evaluate_js('''(()=>{
+          const wave=document.getElementById('orbWave');
+          return {radiusRatio:gl.getUniform(prog,U.uR)/qaQuietRadius,
+            waveform:!!wave&&getComputedStyle(wave).opacity==='1',
+            quietWave:qaQuietWave,voiceWave:qaWaveHeight(),errors:qaErrors.slice()};
+        })()''')
+        report['audio']=audio
+        if audio['radiusRatio']<1.02 or not audio['waveform'] or audio['voiceWave']<=audio['quietWave'] or audio['errors']:
+            report['failures'].append({'audio':audio})
+        window.evaluate_js('''S.bubble={id:'motion-capture',who:'you',live:true,text:'Your voice moves the orb. New words rise gently into view.'};tickBubble(.01);''')
+        time.sleep(.1)
+        capture('orb-words-in')
+        time.sleep(.55)
+        capture('orb-words-settled')
+        window.evaluate_js('S.mic=.08;render();')
+        time.sleep(.35)
+        alpha = window.evaluate_js('''(()=>{
+          const pixels=new Uint8Array(cv.width*cv.height*4);gl.readPixels(0,0,cv.width,cv.height,gl.RGBA,gl.UNSIGNED_BYTE,pixels);
+          let invalid=0;for(let i=0;i<pixels.length;i+=4)if(Math.max(pixels[i],pixels[i+1],pixels[i+2])>pixels[i+3]+1)invalid++;
+          return {invalid,error:gl.getError()};
+        })()''')
+        report['alpha']=alpha
+        if alpha['invalid'] or alpha['error']:report['failures'].append({'alpha':alpha})
         window.evaluate_js('''(()=>{
           S.review=null;S.expanded=true;applyExpanded(true);render();
           window.qaOldSnapshot={...S,expanded:true};window.qaOldGeneration=typeof settingsGeneration==='number'?settingsGeneration:0;

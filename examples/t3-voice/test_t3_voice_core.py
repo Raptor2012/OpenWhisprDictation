@@ -6,7 +6,7 @@ import unittest
 from unittest.mock import patch
 
 import test_live_reader
-from t3_voice_core import McpSender, OpenWhisprFeed, Routes, StreamingFeed, UtteranceGate, send_message_cli
+from t3_voice_core import DictationWatch, McpSender, OpenWhisprFeed, parse_hotkey, Routes, StreamingFeed, UtteranceGate, send_message_cli
 
 
 class RouteTests(unittest.TestCase):
@@ -113,6 +113,36 @@ class OpenWhisprTests(unittest.TestCase):
             db.close()
 
 
+class DictationTests(unittest.TestCase):
+    def test_hotkeys_map_to_virtual_keys(self):
+        self.assertEqual((0x06,), parse_hotkey('MouseButton5'))
+        self.assertEqual((0x11, 0x12, 0x20), parse_hotkey('Control+Alt+Space'))
+        self.assertEqual((0x11, 0x5B), parse_hotkey('CommandOrControl+Super'))
+        self.assertEqual((0x77,), parse_hotkey('F8'))
+        self.assertEqual((0x10, 0x4B), parse_hotkey('Shift+k'))
+        self.assertIsNone(parse_hotkey('GLOBE'))
+        self.assertIsNone(parse_hotkey(''))
+
+    def test_watch_reports_every_new_row_once_with_status(self):
+        import sqlite3
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'transcriptions.db'
+            db = sqlite3.connect(path)
+            db.execute("CREATE TABLE transcriptions (id INTEGER PRIMARY KEY AUTOINCREMENT, text TEXT NOT NULL, "
+                       "status TEXT NOT NULL DEFAULT 'completed', error_message TEXT, deleted_at TEXT)")
+            db.execute("INSERT INTO transcriptions (text) VALUES ('history')"); db.commit()
+            watch = DictationWatch(path)
+            self.assertEqual([], watch.poll())
+            db.execute("INSERT INTO transcriptions (text) VALUES (' Pasted text. ')")
+            db.execute("INSERT INTO transcriptions (text, status, error_message) VALUES ('', 'failed', 'No audio')")
+            db.commit()
+            rows = watch.poll()
+            self.assertEqual([('completed', 'Pasted text.', ''), ('failed', '', 'No audio')],
+                             [(r['status'], r['text'], r['error']) for r in rows])
+            self.assertEqual([], watch.poll())
+            db.close()
+
+
 class UtteranceTests(unittest.TestCase):
     def test_speech_interrupts_before_silence_submits_once(self):
         gate = UtteranceGate(start_frames=3, silence_frames=4, confirm_frames=5)
@@ -136,6 +166,12 @@ class UtteranceTests(unittest.TestCase):
         events = gate.push(b'z', False) + gate.push(b'z', False) + gate.push(b'z', False)
         self.assertEqual(['end'], [k for k, _ in events])
         self.assertEqual(2, gate.last_voiced)
+
+    def test_reset_drops_the_utterance_in_progress(self):
+        gate = UtteranceGate(start_frames=2, silence_frames=3, confirm_frames=3)
+        gate.push(b'a', True); gate.push(b'b', True); gate.push(b'c', True)
+        gate.reset()
+        self.assertEqual([], gate.push(b'z', False) + gate.push(b'z', False) + gate.push(b'z', False))
 
     def test_short_noise_is_not_an_utterance(self):
         gate = UtteranceGate(start_frames=3, silence_frames=4)

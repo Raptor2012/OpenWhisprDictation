@@ -8,15 +8,19 @@ The orb stays out of the way:
 - When T3 Code is minimized, a speech bubble rises above the orb and types out Maeve's reply at speaking pace, and briefly shows what you said, like a desktop pet.
 - Hover the orb for two buttons: mute your microphone, and mute Maeve. With Maeve muted and T3 minimized, replies still appear silently in the bubble.
 - Ctrl+Alt+M stops Maeve while she speaks; otherwise it summons the orb for a few seconds so you can click it for settings.
+- The same UI mirrors OpenWhispr dictation: a blue orb and live mic waveform while recording, a working animation after release, then a green done pulse or a failure indication from the local history. It reads `DICTATION_KEY` and `ACTIVATION_MODE` from OpenWhispr's `.env`, including mouse buttons and push/tap modes. It never changes those settings or triggers the key itself.
+- Hover and use the minimize chip, or choose **Options → Minimize to toolbar**, for a persistent 200×48 capsule. The mini orb opens settings; the other controls mute the T3 microphone, mute Maeve, and expand back to the orb. The waveform follows microphone input and Maeve playback. Bubble and settings windows grow upward around the same bottom-centre anchor. The toolbar preference survives restarts.
+- **Hide OpenWhispr's own pill** is enabled by default, giving dictation and Maeve one shared surface. The original pill receives an empty window region while its recorder keeps running; disabling the option or quitting normally restores it. The mute controls affect the T3 integration, not OpenWhispr's recorder.
 
 Two microphone modes:
 
 - **Hands-free** (default): the orb owns the microphone. WebRTC VAD endpoints after 400 ms of silence; speaking again interrupts Maeve.
+- In either mode, starting OpenWhispr dictation stops Maeve and suppresses hands-free capture during recording and for 600 ms after release. Dictation is therefore not also captured as a hands-free T3 utterance.
 - **OpenWhispr hotkey**: dictate with OpenWhispr Dictation's own hotkey. Each completed dictation in OpenWhispr's local history is forwarded to the thread. OpenWhispr also pastes into the focused field, so keep T3's composer unfocused in this mode.
 
 The loop:
 
-1. You speak. WebRTC VAD endpoints the utterance after 500 ms of silence.
+1. You speak. WebRTC VAD endpoints the utterance after 400 ms of silence.
 2. OpenWhispr's running Parakeet 0.6B service (sherpa-onnx WebSocket on `127.0.0.1:6006`) transcribes it in about 300 ms.
 3. The text is posted to the chosen T3 thread over T3's local MCP endpoint (about 20 ms per call).
 4. Maeve (Phonon 31M, British English, CPU) reads the reply sentence by sentence while it is still streaming. First audio in about 40 ms. Speaking again interrupts her.
@@ -51,7 +55,7 @@ Press Ctrl+Alt+M to summon the orb, click it, pick a thread, press **Voice on**,
 | `live_reader_core.py` | Read-only SQLite feed of T3 messages and Markdown-to-prose cleaning |
 | `live_reader.py` | Earlier reader; the panel reuses its persistent audio device |
 | `pair_t3.py` | Mints the MCP token through T3's pairing-code OAuth flow |
-| `test_*.py` | `python -m unittest -q` runs 27 tests (SQLite fixtures, endpointing, orb visibility and bubble rules), no audio needed |
+| `test_*.py` | `python -m unittest test_orb_logic test_t3_voice_core test_live_reader -q` runs 35 tests (SQLite fixtures, hotkey parsing, dictation status, capture suppression, endpointing, toolbar sizing, visibility and bubble rules), no audio needed |
 
 `t3-voice-token.txt`, settings, status and logs are git-ignored. The status file holds timings and counters only, never conversation text.
 

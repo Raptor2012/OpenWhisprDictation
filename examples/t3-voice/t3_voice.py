@@ -29,20 +29,23 @@ import webview
 from diagnostics import write_status
 from live_reader import ContinuousAudio
 from live_reader_core import Message
-from t3_voice_core import (OpenWhisprFeed, Routes, StreamingFeed, UtteranceGate, cleanup_text, list_threads,
-                           send_message, transcribe)
+from t3_voice_core import (DictationWatch, OpenWhisprFeed, Routes, StreamingFeed, UtteranceGate, cleanup_text,
+                           list_threads, parse_hotkey, read_env, send_message, transcribe)
 
 ROOT = Path(__file__).resolve().parent
 DB = Path.home() / '.t3/userdata/statev2.sqlite'
 RATE = 16000
 FRAME = 320  # 20 ms at 16 kHz
 COMPACT, BUBBLE, CARD = (180, 150), (340, 300), (320, 296)
+BAR, BAR_BUBBLE, BAR_CARD = (200, 48), (340, 214), (320, 196)   # toolbar mode
+OPENWHISPR_ENV = Path(os.environ.get('APPDATA', '')) / 'OpenWhisprDictation/.env'
 LINGER = 1.2        # seconds the orb stays after the last reason to show it
 FADE = 0.5          # seconds for the exit animation before the window is hidden
 
 # A private handle: setting argtypes on ctypes.windll.user32 would change pywebview's own calls (drag).
 user32 = ctypes.WinDLL('user32')
 kernel32 = ctypes.WinDLL('kernel32')
+gdi32 = ctypes.WinDLL('gdi32')
 user32.SetWindowPos.argtypes = [wintypes.HWND, wintypes.HWND, ctypes.c_int, ctypes.c_int, ctypes.c_int,
                                 ctypes.c_int, ctypes.c_uint]
 user32.MonitorFromPoint.argtypes = [wintypes.POINT, wintypes.DWORD]
@@ -53,13 +56,18 @@ SW_HIDE, SW_SHOWNOACTIVATE = 0, 4
 EnumWindowsProc = ctypes.WINFUNCTYPE(ctypes.c_bool, wintypes.HWND, wintypes.LPARAM)
 
 
-def find_t3_window():
-    """Top-level visible window of the T3 Code desktop app, or None."""
+def find_app_window(exe, title=None):
+    """First visible, unowned top-level window of a process whose image ends with `exe`, or None."""
     found = []
 
     def visit(hwnd, _):
         if not user32.IsWindowVisible(hwnd) or user32.GetWindow(hwnd, 4) or not user32.GetWindowTextLengthW(hwnd):
             return True
+        if title is not None:
+            text = ctypes.create_unicode_buffer(256)
+            user32.GetWindowTextW(hwnd, text, 256)
+            if text.value != title:
+                return True
         pid = wintypes.DWORD()
         user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
         handle = kernel32.OpenProcess(0x1000, False, pid.value)  # PROCESS_QUERY_LIMITED_INFORMATION
@@ -68,13 +76,33 @@ def find_t3_window():
             path = ctypes.create_unicode_buffer(520)
             ok = kernel32.QueryFullProcessImageNameW(handle, 0, path, ctypes.byref(size))
             kernel32.CloseHandle(handle)
-            if ok and path.value.lower().endswith('t3 code (beta).exe'):
+            if ok and path.value.lower().endswith(exe):
                 found.append(hwnd)
                 return False
         return True
 
     user32.EnumWindows(EnumWindowsProc(visit), 0)
     return found[0] if found else None
+
+
+def find_t3_window():
+    return find_app_window('t3 code (beta).exe')
+
+
+def find_openwhispr_pill():
+    return find_app_window('openwhispr dictation.exe', 'Voice Recorder')
+
+
+def set_hidden_region(hwnd, hidden):
+    """An empty window region hides OpenWhispr's pill without hiding the window, so Chromium keeps
+    treating it as visible and never throttles the recorder that lives in it."""
+    probe = gdi32.CreateRectRgn(0, 0, 0, 0)
+    kind = user32.GetWindowRgn(hwnd, probe)
+    gdi32.DeleteObject(probe)
+    if hidden and kind != 1:  # 1 = NULLREGION
+        user32.SetWindowRgn(hwnd, gdi32.CreateRectRgn(0, 0, 0, 0), True)
+    elif not hidden and kind == 1:
+        user32.SetWindowRgn(hwnd, None, True)
 
 
 class Prefs:
@@ -156,6 +184,21 @@ class Engine:
         self.silent = deque()
         self.silent_next = 0.0
         self.startup_cached = None
+        # OpenWhispr dictation mirrored in the orb
+        self.dock = bool(self.prefs.get('dock', False))
+        self.hide_pill = bool(self.prefs.get('hidePill', True))
+        self.pill_hwnd = None
+        self.pill_scan_at = 0.0
+        self.dict_keys = None
+        self.dict_mode = 'push'
+        self.env_read_at = 0.0
+        self.dictating = False
+        self.dict_state = ''          # '', 'dictating', 'processing', 'done', 'failed'
+        self.dict_until = 0.0
+        self.dict_quiet_until = 0.0
+        self.dict_watch = DictationWatch()
+        self.listening = False
+        self.read_openwhispr_settings()
         self.meta = {'pid': os.getpid(), 'state': 'loading', 'voice': 'Maeve', 'model': 'Phonon 31M',
                      'asr': 'parakeet-0.6b via sherpa ws:6006', 'chunksSpoken': 0, 'utterancesSent': 0,
                      'utterancesDiscarded': 0}
@@ -195,13 +238,17 @@ class Engine:
             hint = self.detail or 'Stop: Ctrl+Alt+M or Esc. Headphones recommended.'
         if self.startup_cached is None:
             self.startup_cached = self.startup_enabled()
-        show_bubble = self.bubble is not None and self.t3_min and not self.expanded
-        return {'state': self.state, 'text': self.text, 'mic': self.mic_level, 'out': self.out_level,
+        show_bubble = self.bubble is not None and time.monotonic() < self.bubble_until and self.t3_min and not self.expanded
+        state, text = self.state, self.text
+        if self.dict_state:
+            state, text = self.dict_state, (self.dict_error if self.dict_state == 'failed' else '')
+        return {'state': state, 'text': text, 'mic': self.mic_level, 'out': self.out_level,
                 'voiceOn': self.voice_on(), 'mode': self.mode, 'thread': self.thread or '', 'threadTitle': title,
                 'threads': [{'id': t['id'], 'title': (t['title'] or '')[:60]} for t in self.threads[:40]],
                 'detail': hint, 'cleanup': self.cleanup, 'startup': self.startup_cached,
                 'openwhispr': self.openwhispr.available(), 'visible': self.visible,
-                'micMuted': self.mic_muted, 'maeveMuted': self.maeve_muted,
+                'micMuted': self.mic_muted, 'maeveMuted': self.maeve_muted, 'dock': self.dock,
+                'hidePill': self.hide_pill, 'dictKey': self.prefs.get('dictKeyLabel', ''),
                 'bubble': self.bubble if show_bubble else None}
 
     # ----- routing -----
@@ -238,6 +285,7 @@ class Engine:
 
     def after_route_change(self):
         self.pending = None
+        self.openwhispr.cursor = None  # never replay history after switching the target or mode
         self.detail = ''
         if self.ready:
             self.set_state(self.idle_state())
@@ -269,6 +317,41 @@ class Engine:
                 winreg.SetValueEx(key, 'MaeveT3Voice', 0, winreg.REG_SZ, self.startup_command())
         self.startup_cached = None
 
+    # ----- toolbar and OpenWhispr pill -----
+    def toggle_dock(self):
+        with self.lock:
+            self.dock = not self.dock
+            self.prefs.set('dock', self.dock)
+            self.expanded = False
+            self.show_until = time.monotonic() + LINGER
+            if self.hwnd is not None:
+                self.place(self.target_size())
+            self.cue([587, 440] if self.dock else [440, 587], 50)
+
+    def toggle_hide_pill(self):
+        with self.lock:
+            self.hide_pill = not self.hide_pill
+            self.prefs.set('hidePill', self.hide_pill)
+            self.manage_pill(force=True)
+
+    def manage_pill(self, force=False):
+        now = time.monotonic()
+        if force or now >= self.pill_scan_at or (self.pill_hwnd and not user32.IsWindow(self.pill_hwnd)):
+            if not (self.pill_hwnd and user32.IsWindow(self.pill_hwnd)):
+                self.pill_hwnd = find_openwhispr_pill()
+            self.pill_scan_at = now + 2.0
+        if self.pill_hwnd:
+            set_hidden_region(self.pill_hwnd, self.hide_pill and not self.quit.is_set())
+
+    def read_openwhispr_settings(self):
+        env = read_env(OPENWHISPR_ENV)
+        label = env.get('DICTATION_KEY', '')
+        self.dict_keys = parse_hotkey(label)
+        self.dict_mode = 'tap' if env.get('ACTIVATION_MODE', 'push') == 'tap' else 'push'
+        if label != self.prefs.get('dictKeyLabel'):
+            self.prefs.set('dictKeyLabel', label)
+        self.env_read_at = time.monotonic() + 5.0
+
     # ----- mutes -----
     def toggle_mic_mute(self):
         with self.lock:
@@ -297,7 +380,8 @@ class Engine:
 
     # ----- speech in -----
     def update_mic(self):
-        want = self.ready and self.voice_on() and self.mode == 'handsfree' and not self.mic_muted
+        self.listening = self.ready and self.voice_on() and self.mode == 'handsfree' and not self.mic_muted
+        want = self.listening or (self.ready and self.dictating)
         if want and self.mic_stream is None:
             self.vad = webrtcvad.Vad(3)
             self.gate = UtteranceGate(start_frames=2, silence_frames=20)  # 40 ms start, 400 ms end
@@ -309,8 +393,6 @@ class Engine:
             self.mic_stream.close()
             self.mic_stream = None
             self.mic_level = 0.0
-        if self.mode == 'openwhispr':
-            self.openwhispr.cursor = None  # position on the next poll; never replay history
 
     def mic_callback(self, data, frames, timing, status):
         frame = bytes(data)
@@ -318,6 +400,10 @@ class Engine:
             return
         samples = np.frombuffer(frame, dtype='<i2').astype('f4') / 32768
         self.mic_level = float(np.sqrt(np.mean(samples * samples)))
+        if not self.listening or self.dictating or time.monotonic() < self.dict_quiet_until:
+            if self.gate.frames is not None:
+                self.gate.reset()  # OpenWhispr owns this speech; never also send it to T3
+            return
         try:
             voiced = self.vad.is_speech(frame, RATE)
         except Exception:
@@ -397,13 +483,25 @@ class Engine:
 
     # ----- speech out -----
     def hotkey(self):
-        held = False
+        held = dict_held = False
+        active = False
         user32 = ctypes.windll.user32
-        while not self.quit.wait(.025):
+        while not self.quit.wait(.015):
             down = all(user32.GetAsyncKeyState(key) & 0x8000 for key in (0x11, 0x12, 0x4D))  # Ctrl+Alt+M
             if down and not held:
                 self.notice.put(('hotkey', None))
             held = down
+            keys = self.dict_keys
+            dict_down = bool(keys) and all(user32.GetAsyncKeyState(key) & 0x8000 for key in keys)
+            if self.dict_mode == 'push':
+                if dict_down and not dict_held:
+                    self.notice.put(('dict-start', None))
+                elif dict_held and not dict_down:
+                    self.notice.put(('dict-stop', None))
+            elif dict_down and not dict_held:  # tap mode toggles
+                active = not active
+                self.notice.put(('dict-start' if active else 'dict-stop', None))
+            dict_held = dict_down
 
     def stop(self):
         if self.audio:
@@ -510,6 +608,20 @@ class Engine:
                 elif kind == 'stop':
                     self.stop()
                     self.set_state('stopped')
+                elif kind == 'dict-start':
+                    if self.current or not self.jobs.empty():
+                        self.stop()  # Maeve must not talk into the dictation
+                    self.pending = None
+                    self.dictating = True
+                    self.dict_state = 'dictating'
+                    self.update_mic()
+                elif kind == 'dict-stop':
+                    if self.dictating:
+                        self.dictating = False
+                        self.dict_state = 'processing'
+                        self.dict_until = time.monotonic() + 12.0
+                        self.dict_quiet_until = time.monotonic() + 0.6
+                        self.update_mic()
                 elif kind == 'hotkey':
                     if self.current or not self.jobs.empty() or self.state in ('speaking', 'reading'):
                         self.stop()
@@ -577,6 +689,7 @@ class Engine:
                     self.meta['error'] = value
         except queue.Empty:
             pass
+        self.dictation_tick()
         if self.pending and self.pending['deadline'] and time.monotonic() >= self.pending['deadline']                 and self.state not in ('hearing', 'transcribing'):
             fragment = self.pending
             self.pending = None
@@ -601,10 +714,35 @@ class Engine:
             self.meta['connectionError'] = type(exc).__name__
         self.meta['updatedAt'] = time.time()
         self.meta['mode'] = self.mode
+        self.meta.update(dock=self.dock, dictationState=self.dict_state, hidePill=self.hide_pill)
         if self.audio:
             self.meta.update(playedSamples=self.audio.played_samples, outputUnderflows=self.audio.output_underflows)
         write_status(ROOT / 't3-voice-status.json', self.meta)
         self.desktop_tick()
+
+    # ----- OpenWhispr dictation -----
+    dict_error = ''
+
+    def dictation_tick(self):
+        now = time.monotonic()
+        if now >= self.env_read_at:
+            self.read_openwhispr_settings()
+        self.manage_pill()
+        try:
+            rows = self.dict_watch.poll()
+        except Exception as exc:
+            self.meta['dictationWatchError'] = type(exc).__name__
+            rows = []
+        if rows and self.dict_state in ('dictating', 'processing'):
+            last = rows[-1]
+            if last['status'] == 'completed' and last['text']:
+                self.dict_state, self.dict_until = 'done', now + 0.9
+                self.meta['lastDictationWords'] = len(last['text'].split())
+            else:
+                self.dict_state, self.dict_until = 'failed', now + 3.0
+                self.dict_error = (last['error'] or 'Dictation failed')[:60]
+        elif self.dict_state in ('processing', 'done', 'failed') and now >= self.dict_until:
+            self.dict_state = ''
 
     # ----- bubble -----
     def show_bubble(self, who, text, run, seconds):
@@ -626,8 +764,14 @@ class Engine:
         self.show_bubble('maeve', message.text, message.run, max(2.5, len(message.text.split()) / 2.8))
 
     # ----- desktop: T3 state, visibility, placement -----
+    def target_size(self):
+        bubble = self.t3_min and self.bubble is not None and time.monotonic() < self.bubble_until
+        if self.dock:
+            return BAR_CARD if self.expanded else BAR_BUBBLE if bubble else BAR
+        return CARD if self.expanded else BUBBLE if bubble else COMPACT
+
     def wants_visible(self, now):
-        if self.expanded or self.hovered or now < self.pin_until or self.pending:
+        if self.dock or self.dict_state or self.expanded or self.hovered or now < self.pin_until or self.pending:
             return True
         state = self.state
         if state in ('speaking', 'reading', 'transcribing', 'sending'):
@@ -662,7 +806,7 @@ class Engine:
         visible = now < self.show_until
         if visible:
             self.hide_at = None
-            self.place(CARD if self.expanded else BUBBLE if (self.t3_min and self.bubble) else COMPACT)
+            self.place(self.target_size())
             if not self.visible:
                 user32.SetWindowPos(self.hwnd, HWND_TOPMOST, 0, 0, 0, 0,
                                     SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE | SWP_ASYNC)
@@ -711,7 +855,7 @@ class Engine:
             scale = self.scale()
             saved = [area.right - int(120 * scale), area.bottom - int(8 * scale)]
         self.size = None
-        self.place(COMPACT, anchor=saved)
+        self.place(self.target_size(), anchor=saved)
         self.visible = True  # navigation shows the window once; the normal fade hides it after the intro
 
     def set_hover(self, hovered):
@@ -722,10 +866,12 @@ class Engine:
             return
         self.expanded = expanded
         self.show_until = time.monotonic() + LINGER
-        self.place(CARD if expanded else BUBBLE if (self.t3_min and self.bubble) else COMPACT)
+        self.place(self.target_size())
 
     def close(self):
         self.quit.set()
+        if self.pill_hwnd and user32.IsWindow(self.pill_hwnd):
+            set_hidden_region(self.pill_hwnd, False)
         self.stop()
         if self.mic_stream:
             self.mic_stream.abort()
@@ -781,6 +927,12 @@ class Api:
     def toggle_maeve_mute(self):
         self._engine.toggle_maeve_mute()
 
+    def toggle_dock(self):
+        self._engine.toggle_dock()
+
+    def toggle_hide_pill(self):
+        self._engine.toggle_hide_pill()
+
     def quit(self):
         self._engine.close()
 
@@ -817,7 +969,7 @@ def main():
     window = webview.create_window('Maeve', url=str(ROOT / 'ui/orb.html'), js_api=Api(engine),
                                    width=COMPACT[0], height=COMPACT[1], x=0, y=0, frameless=True,
                                    transparent=True, on_top=True, easy_drag=True, resizable=False, focus=False,
-                                   min_size=(100, 100), background_color='#000000')
+                                   min_size=(100, BAR[1]), background_color='#000000')
     engine.window = window
     window.events.closed += engine.close
     window.events.shown += lambda: make_transparent(window, engine)

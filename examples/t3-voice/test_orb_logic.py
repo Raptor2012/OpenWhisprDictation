@@ -3,6 +3,7 @@ import sys
 import time
 import unittest
 from collections import deque
+from unittest.mock import Mock
 
 sys.argv = ['test']
 import t3_voice
@@ -11,7 +12,7 @@ from live_reader_core import Message
 
 def engine(**fields):
     e = t3_voice.Engine.__new__(t3_voice.Engine)
-    defaults = dict(expanded=False, hovered=False, pin_until=0.0, pending=None, state='ready', confirmed=False,
+    defaults = dict(dock=False, dict_state='', expanded=False, hovered=False, pin_until=0.0, pending=None, state='ready', confirmed=False,
                     sent_at=0.0, error_at=0.0, t3_min=False, bubble=None, bubble_until=0.0, bubble_seq=0,
                     bubble_run=None, silent=deque(), meta={})
     defaults.update(fields)
@@ -20,6 +21,48 @@ def engine(**fields):
 
 
 class VisibilityTests(unittest.TestCase):
+    def test_dictation_completion_and_failure_feedback(self):
+        for status, text, expected in [('completed', 'Pasted words.', 'done'), ('failed', '', 'failed')]:
+            e = engine(dict_state='processing', env_read_at=float('inf'), manage_pill=Mock(),
+                       dict_watch=Mock(poll=lambda: [{'status': status, 'text': text, 'error': 'No audio'}]))
+            e.dictation_tick()
+            self.assertEqual(expected, e.dict_state)
+            self.assertGreater(e.dict_until, time.monotonic())
+
+    def test_dictation_suppresses_handsfree_capture_and_cooldown(self):
+        for dictating, quiet_until in [(True, 0), (False, time.monotonic() + 1)]:
+            gate = t3_voice.UtteranceGate()
+            gate.push(b'x', True)
+            gate.push(b'x', True)
+            e = engine(listening=True, dictating=dictating, dict_quiet_until=quiet_until,
+                       gate=gate, vad=Mock(), notice=Mock())
+            e.mic_callback(bytes(t3_voice.FRAME * 2), t3_voice.FRAME, None, None)
+            self.assertIsNone(gate.frames)
+            e.vad.is_speech.assert_not_called()
+            e.notice.put.assert_not_called()
+
+    def test_toolbar_and_dictation_remain_visible(self):
+        now = time.monotonic()
+        self.assertTrue(engine(dock=True).wants_visible(now))
+        for state in ('dictating', 'processing', 'done', 'failed'):
+            self.assertTrue(engine(dict_state=state).wants_visible(now))
+
+    def test_toolbar_sizes_and_expired_bubble(self):
+        now = time.monotonic()
+        e = engine(dock=True, t3_min=True, bubble={'text': 'old'}, bubble_until=now - 1)
+        self.assertEqual(t3_voice.BAR, e.target_size())
+        e.bubble_until = now + 3
+        self.assertEqual(t3_voice.BAR_BUBBLE, e.target_size())
+        e.expanded = True
+        self.assertEqual(t3_voice.BAR_CARD, e.target_size())
+
+    def test_mic_update_does_not_skip_new_dictation(self):
+        feed = Mock(cursor=42)
+        e = engine(ready=False, voice_on=lambda: False, mode='openwhispr', mic_muted=False,
+                   dictating=False, mic_stream=None, openwhispr=feed)
+        e.update_mic()
+        self.assertEqual(42, feed.cursor)
+
     def test_idle_orb_is_hidden(self):
         self.assertFalse(engine().wants_visible(time.monotonic()))
 

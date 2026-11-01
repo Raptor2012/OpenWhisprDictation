@@ -48,6 +48,36 @@
   #btext .fresh { animation:ink .5s var(--soft); }
   @keyframes ink { from { opacity:0; filter:blur(3px); } to { opacity:1; filter:none; } }
 
+  /* minimize chip (orb mode, on hover) */
+  #toBar { position:absolute; left:118px; top:36px; width:22px; height:22px; border-radius:50%; display:flex; align-items:center; justify-content:center;
+           background:rgba(24,25,31,.82); border:1px solid rgba(255,255,255,.12); cursor:pointer; opacity:0; transform:scale(.4); pointer-events:none;
+           transition:opacity .2s var(--soft), transform .45s var(--spring), background .15s; transition-delay:.08s; }
+  body.hover #toBar { opacity:1; transform:none; pointer-events:auto; }
+  #toBar:hover { background:rgba(44,46,56,.92); }
+  #toBar svg { width:12px; height:12px; stroke:#e9ebf1; fill:none; stroke-width:2; stroke-linecap:round; }
+
+  /* toolbar (minimized) */
+  #bar { position:absolute; left:50%; bottom:4px; width:196px; height:40px; margin-left:-98px; box-sizing:border-box; border-radius:20px;
+         display:none; align-items:center; gap:4px; padding:0 6px 0 0; background:rgba(18,19,24,.86); border:1px solid rgba(255,255,255,.10);
+         backdrop-filter:blur(18px) saturate(1.3); box-shadow:0 8px 26px rgba(0,0,0,.42); }
+  body.bar #bar { display:flex; animation:barIn .5s var(--spring); }
+  body.bar #orbwrap { display:none; }
+  @keyframes barIn { from { transform:scale(.6); opacity:0; } to { transform:none; opacity:1; } }
+  #barOrb { width:40px; height:40px; flex:none; position:relative; cursor:pointer; }
+  body.bar #orb { inset:auto; left:-8px; top:-8px; }
+  #wave { width:52px; height:24px; flex:none; }
+  .bbtn { width:26px; height:26px; border-radius:50%; flex:none; display:flex; align-items:center; justify-content:center; cursor:pointer;
+          background:rgba(255,255,255,.06); transition:background .15s, transform .35s var(--spring); }
+  .bbtn:hover { background:rgba(255,255,255,.14); }
+  .bbtn:active { transform:scale(.86); }
+  .bbtn svg { width:14px; height:14px; stroke:#e9ebf1; fill:none; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round; }
+  .bbtn .slash { opacity:0; transition:opacity .15s; }
+  .bbtn.muted { background:rgba(120,30,38,.85); }
+  .bbtn.muted .slash { opacity:1; }
+  body.bar #bubble { bottom:56px; }
+  body.bar #card { bottom:54px; }
+  body.bar #cap, body.bar #badge { display:none; }
+
   /* settings card */
   #card { position:absolute; left:12px; right:12px; top:10px; bottom:150px; background:var(--glass); backdrop-filter:blur(18px) saturate(1.3); border:1px solid var(--line); border-radius:20px; padding:10px 12px 10px; box-sizing:border-box; opacity:0; transform:translateY(14px) scale(.94); transform-origin:50% 100%; transition:opacity .25s ease, transform .45s var(--spring); pointer-events:none; box-shadow:0 12px 40px rgba(0,0,0,.45); }
   #card.open { opacity:1; transform:none; pointer-events:auto; }
@@ -93,6 +123,8 @@
     <div id="menu">
       <div id="mCleanup">Clean up with OpenWhispr's model</div>
       <div id="mStartup">Start with Windows</div>
+      <div id="mDock">Minimize to toolbar</div>
+      <div id="mPill">Hide OpenWhispr's own pill</div>
     </div>
   </div>
   <div id="orbwrap">
@@ -103,8 +135,22 @@
     <div class="ctl" id="muteMaeve" title="Mute Maeve">
       <svg viewBox="0 0 24 24"><path d="M4 9.5h3.5L12 5.5v13l-4.5-4H4z"/><path d="M15.5 9a4 4 0 0 1 0 6M18 6.5a7.5 7.5 0 0 1 0 11"/><path class="slash" d="M4 4l16 16"/></svg>
     </div>
+    <div id="toBar" title="Minimize to toolbar"><svg viewBox="0 0 24 24"><path d="M5 17h14"/></svg></div>
     <div id="badge"></div>
     <div id="cap"></div>
+  </div>
+  <div id="bar">
+    <div id="barOrb" title="Settings"></div>
+    <canvas id="wave"></canvas>
+    <div class="bbtn" id="barMic" title="Mute my microphone">
+      <svg viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21"/><path class="slash" d="M4 4l16 16"/></svg>
+    </div>
+    <div class="bbtn" id="barMaeve" title="Mute Maeve">
+      <svg viewBox="0 0 24 24"><path d="M4 9.5h3.5L12 5.5v13l-4.5-4H4z"/><path d="M15.5 9a4 4 0 0 1 0 6M18 6.5a7.5 7.5 0 0 1 0 11"/><path class="slash" d="M4 4l16 16"/></svg>
+    </div>
+    <div class="bbtn" id="barExpand" title="Expand to orb">
+      <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="6.5"/></svg>
+    </div>
   </div>
 </div>
 
@@ -208,10 +254,15 @@ const PAL = {
   speaking:{a:[.28,.06,.48], b:[.68,.36,1.0], c:[.92,.78,1.0], glow:1.0},
   reading:{a:[.20,.08,.36], b:[.52,.34,.86], c:[.84,.76,.98], glow:.6},
   stopped:{a:[.18,.19,.24], b:[.40,.42,.50], c:[.68,.70,.76], glow:.3},
+  dictating:{a:[.10,.30,.52], b:[.52,.84,1.0], c:[.92,.98,1.0], glow:.95},
+  processing:{a:[.04,.28,.40], b:[.24,.72,.86], c:[.70,.96,1.0], glow:.75},
+  done:   {a:[.04,.34,.16], b:[.24,.86,.46], c:[.78,1.0,.84], glow:1.0},
+  failed: {a:[.40,.06,.08], b:[1.0,.30,.32], c:[1.0,.72,.70], glow:.9},
   error:  {a:[.40,.06,.08], b:[1.0,.30,.32], c:[1.0,.72,.70], glow:.9}
 };
 const LABEL = { loading:'Loading Maeve…', off:'Voice off', ready:'', hearing:'Listening', transcribing:'Transcribing',
-  sending:'Sending', waiting:'Sent', speaking:'', reading:'', stopped:'Stopped', error:'Error' };
+  sending:'Sending', waiting:'Sent', speaking:'', reading:'', stopped:'Stopped', error:'Error',
+  dictating:'Dictating', processing:'Writing…', done:'Done', failed:'Dictation failed' };
 
 // Damped harmonic springs: every motion overshoots a little and settles, Apple style.
 class Spring { constructor(v, k=170, d=18){ this.x=v; this.v=0; this.k=k; this.d=d; this.t=v; }
@@ -219,9 +270,16 @@ class Spring { constructor(v, k=170, d=18){ this.x=v; this.v=0; this.k=k; this.d
 class Spring3 { constructor(v,k,d){ this.s=[new Spring(v[0],k,d),new Spring(v[1],k,d),new Spring(v[2],k,d)]; } set t(v){ this.s[0].t=v[0]; this.s[1].t=v[1]; this.s[2].t=v[2]; } step(dt){ return this.s.map(s=>s.step(dt)); } }
 
 const cv = document.getElementById('orb');
-const W = 180, H = 150, CX = 90, CY = 84, R = 30;
+let W = 180, H = 150, CX = 90, CY = 84, R = 30, barMode = false;
 const dpr = window.devicePixelRatio || 1;
-cv.width = W*dpr; cv.height = H*dpr; cv.style.width = W+'px'; cv.style.height = H+'px';
+function layout(bar){
+  barMode = bar;
+  document.body.classList.toggle('bar', bar);
+  if (bar) { W = 56; H = 56; CX = 28; CY = 28; R = 11; document.getElementById('barOrb').appendChild(cv); }
+  else { W = 180; H = 150; CX = 90; CY = 84; R = 30; document.getElementById('orbwrap').prepend(cv); }
+  cv.width = W*dpr; cv.height = H*dpr; cv.style.width = W+'px'; cv.style.height = H+'px';
+}
+layout(false);
 const gl = cv.getContext('webgl', {alpha:true, premultipliedAlpha:true, antialias:true});
 function sh(type, src){ const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s); if(!gl.getShaderParameter(s, gl.COMPILE_STATUS)) console.error(gl.getShaderInfoLog(s)); return s; }
 const prog = gl.createProgram();
@@ -247,14 +305,14 @@ function frame(now){
   const dt = Math.min(0.05, (now - lastT)/1000); lastT = now;
   const p = PAL[S.state] || PAL.off;
   sA.t = p.a; sB.t = p.b; sC.t = p.c; sGlow.t = p.glow;
-  const audio = S.state==='hearing' ? Math.min(1, S.mic*3.4) : S.state==='speaking' ? Math.min(1, S.out*2.8) :
+  const audio = (S.state==='hearing'||S.state==='dictating') ? Math.min(1, S.mic*3.4) : S.state==='speaking' ? Math.min(1, S.out*2.8) :
                 S.state==='reading' ? 0.18 + 0.12*Math.sin(now/260) : 0;
   sLevel.t = audio;
-  sBusy.t = (S.state==='transcribing'||S.state==='sending') ? 1 : 0;
-  sRipple.t = (S.state==='speaking'||S.state==='hearing'||S.state==='reading') ? 1 : 0;
-  sOff.t = S.voiceOn ? 0 : 1;
-  sAppear.t = (S.visible || hovering || expanded) ? 1 : 0;
-  if (S.state !== lastState) { sScale.v += (S.state==='hearing'||S.state==='speaking') ? 1.6 : S.state==='error' ? -1.2 : 0.9; lastState = S.state; }
+  sBusy.t = (S.state==='transcribing'||S.state==='sending'||S.state==='processing') ? 1 : 0;
+  sRipple.t = (S.state==='speaking'||S.state==='hearing'||S.state==='reading'||S.state==='dictating') ? 1 : 0;
+  sOff.t = S.voiceOn || ['dictating','processing','done','failed'].includes(S.state) ? 0 : 1;
+  sAppear.t = (S.visible || hovering || expanded || barMode) ? 1 : 0;
+  if (S.state !== lastState) { sScale.v += (S.state==='hearing'||S.state==='speaking'||S.state==='dictating') ? 1.6 : S.state==='done' ? 2.2 : (S.state==='error'||S.state==='failed') ? -1.2 : 0.9; lastState = S.state; }
   const breathe = 1 + 0.025*Math.sin(now/1100);
   sScale.t = breathe * (1 + 0.18*sLevel.x);
   const lvl = sLevel.step(dt), scale = sScale.step(dt), glow = sGlow.step(dt), b = sBusy.step(dt), rip = sRipple.step(dt), off = sOff.step(dt);
@@ -274,9 +332,35 @@ function frame(now){
   gl.uniform3fv(U.uA, A); gl.uniform3fv(U.uB, B); gl.uniform3fv(U.uC, C);
   gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
   tickBubble(dt);
+  if (barMode) drawWave(dt, lvl, C);
   requestAnimationFrame(frame);
 }
 requestAnimationFrame(frame);
+
+// ---------- toolbar waveform: bars spring toward a rolling level history ----------
+const wave = document.getElementById('wave'), wctx = wave.getContext('2d');
+wave.width = 52*dpr; wave.height = 24*dpr;
+const BARS = 11, hist = new Array(BARS).fill(0), bars = Array.from({length:BARS}, ()=> new Spring(0, 320, 18));
+let waveAcc = 0;
+function drawWave(dt, lvl, C){
+  waveAcc += dt;
+  if (waveAcc > 0.06) { waveAcc = 0; hist.shift(); hist.push(Math.max(0, lvl) * (0.6 + 0.4*Math.random())); }
+  const busy = S.state==='processing'||S.state==='transcribing'||S.state==='sending';
+  wctx.clearRect(0, 0, wave.width, wave.height);
+  const col = `rgb(${C.map(v=>Math.round(Math.min(1,v)*255)).join(',')})`;
+  wctx.fillStyle = col;
+  const gap = 52*dpr / BARS, bw = Math.max(2*dpr, gap*0.42), mid = wave.height/2, t = performance.now()/1000;
+  for (let i = 0; i < BARS; i++) {
+    let target = hist[i];
+    if (busy) target = 0.22 + 0.18*Math.sin(t*7 - i*0.7);       // travelling shimmer while working
+    bars[i].t = target; const v = Math.max(0, bars[i].step(dt));
+    const h = Math.max(2.4*dpr, Math.min(wave.height, (0.12 + v*1.6) * wave.height));
+    const x = i*gap + (gap-bw)/2;
+    wctx.globalAlpha = 0.45 + 0.55*Math.min(1, v*3);
+    wctx.beginPath(); wctx.roundRect(x, mid - h/2, bw, h, bw/2); wctx.fill();
+  }
+  wctx.globalAlpha = 1;
+}
 
 // ---------- bubble: typewriter reveal at speaking pace ----------
 const bubbleEl = document.getElementById('bubble'), btext = document.getElementById('btext'), whoEl = document.getElementById('who');
@@ -314,12 +398,18 @@ function tickBubble(dt){
 // ---------- DOM ----------
 const cap = document.getElementById('cap'), card = document.getElementById('card'), badge = document.getElementById('badge');
 const muteMic = document.getElementById('muteMic'), muteMaeve = document.getElementById('muteMaeve');
+const barMic = document.getElementById('barMic'), barMaeve = document.getElementById('barMaeve');
 function render(){
   const label = S.text || LABEL[S.state] || '';
   cap.textContent = label;
   cap.classList.toggle('show', !!label && S.visible && !S.bubble && !hovering && !expanded);
   muteMic.classList.toggle('muted', S.micMuted);   muteMic.title = S.micMuted ? 'Unmute my microphone' : 'Mute my microphone';
   muteMaeve.classList.toggle('muted', S.maeveMuted); muteMaeve.title = S.maeveMuted ? 'Unmute Maeve' : 'Mute Maeve';
+  barMic.classList.toggle('muted', S.micMuted); barMic.title = muteMic.title;
+  barMaeve.classList.toggle('muted', S.maeveMuted); barMaeve.title = muteMaeve.title;
+  if (!!S.dock !== barMode) layout(!!S.dock);
+  document.getElementById('mDock').classList.toggle('on', !!S.dock);
+  document.getElementById('mPill').classList.toggle('on', S.hidePill !== false);
   badge.textContent = S.micMuted && S.maeveMuted ? 'mic · voice off' : S.micMuted ? 'mic off' : S.maeveMuted ? 'voice off' : '';
   badge.classList.toggle('show', !!badge.textContent && S.visible);
   document.getElementById('threadName').textContent = S.threadTitle || 'Choose a thread';
@@ -338,11 +428,11 @@ const Q = new URLSearchParams(location.search), DEMO = Q.get('demo');
 function api(name, ...args){ if (!DEMO && window.pywebview) return pywebview.api[name](...args); }
 async function poll(){ try { S = await pywebview.api.poll(); render(); } catch(e){} setTimeout(poll, 50); }
 if (DEMO) {
-  const seq = ['ready','hearing','transcribing','sending','waiting','speaking','reading','off','error'];
+  const seq = ['ready','hearing','transcribing','sending','waiting','speaking','reading','off','error','dictating','processing','done','failed'];
   let i = seq.indexOf(DEMO); if (i < 0) i = 0;
   S = Object.assign(S, {state:seq[i], voiceOn:true, thread:'x', threadTitle:'Choose a Fast Local Live TTS Model', visible:true,
        threads:[{id:'x',title:'Choose a Fast Local Live TTS Model'},{id:'y',title:'P13 repo cleanup'}], detail:'Sent 9 words · ASR 280 ms · total 310 ms · voice 40 ms', startup:true,
-       micMuted: !!Q.get('micmuted'), maeveMuted: !!Q.get('maevemuted')});
+       micMuted: !!Q.get('micmuted'), maeveMuted: !!Q.get('maevemuted'), dock: !!Q.get('dock'), hidePill: true});
   if (Q.get('bubble')) S.bubble = {id:1, who:Q.get('bubble'), new:0, text: Q.get('bubble')==='you' ? 'Can you check why the deploy failed on the Windows runner?' :
       'I found the cause. The Windows runner pins Node 20, but the lockfile was regenerated with Node 24, so npm ci rejects it. I will pin the runner to Node 24 and rerun the pipeline.'};
   if (Q.get('hover')) { hovering = true; document.body.classList.add('hover'); }
@@ -357,6 +447,14 @@ function setHover(v){ if (hovering===v) return; hovering = v; document.body.clas
 document.getElementById('orbwrap').addEventListener('mouseenter', ()=> setHover(true));
 document.body.addEventListener('mouseleave', ()=> { setHover(false); setTimeout(()=>{ if(!document.matches(':hover')) setExpanded(false); }, 400); });
 cv.addEventListener('click', ()=> setExpanded(!expanded));
+function toggleDock(){ S.dock = !S.dock; setExpanded(false); setHover(false); layout(!!S.dock); api('toggle_dock'); }
+document.getElementById('toBar').addEventListener('click', (e)=>{ e.stopPropagation(); toggleDock(); });
+document.getElementById('barExpand').addEventListener('click', (e)=>{ e.stopPropagation(); toggleDock(); });
+document.getElementById('bar').addEventListener('mouseenter', ()=> setHover(true));
+barMic.addEventListener('click', (e)=>{ e.stopPropagation(); S.micMuted = !S.micMuted; render(); api('toggle_mic_mute'); });
+barMaeve.addEventListener('click', (e)=>{ e.stopPropagation(); S.maeveMuted = !S.maeveMuted; render(); api('toggle_maeve_mute'); });
+document.getElementById('mDock').onclick = ()=> { document.getElementById('menu').classList.remove('open'); toggleDock(); };
+document.getElementById('mPill').onclick = ()=> api('toggle_hide_pill');
 muteMic.addEventListener('click', (e)=>{ e.stopPropagation(); S.micMuted = !S.micMuted; render(); api('toggle_mic_mute'); });
 muteMaeve.addEventListener('click', (e)=>{ e.stopPropagation(); S.maeveMuted = !S.maeveMuted; render(); api('toggle_maeve_mute'); });
 document.getElementById('threadBtn').onclick = ()=> document.getElementById('list').classList.toggle('open');

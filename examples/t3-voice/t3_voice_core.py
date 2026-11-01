@@ -154,6 +154,12 @@ class UtteranceGate:
             events.append(('end', audio))
         return events
 
+    def reset(self):
+        """Drop any utterance in progress (used while OpenWhispr owns the microphone)."""
+        self.frames = None
+        self.pre.clear()
+        self.voiced = self.silent = self.voiced_total = 0
+
 
 class OpenWhisprFeed:
     """New completed OpenWhispr dictations, read-only, from its local history database."""
@@ -184,6 +190,69 @@ class OpenWhisprFeed:
             latest = db.execute('SELECT COALESCE(MAX(id),0) FROM transcriptions').fetchone()[0]
         self.cursor = max(self.cursor, latest)
         return [text.strip() for _, text in rows if isinstance(text, str) and text.strip()]
+
+
+VIRTUAL_KEYS = {
+    'control': 0x11, 'ctrl': 0x11, 'commandorcontrol': 0x11, 'cmdorctrl': 0x11, 'alt': 0x12, 'option': 0x12,
+    'altgr': 0xA5, 'shift': 0x10, 'super': 0x5B, 'meta': 0x5B, 'win': 0x5B, 'command': 0x5B, 'cmd': 0x5B,
+    'space': 0x20, 'tab': 0x09, 'enter': 0x0D, 'return': 0x0D, 'escape': 0x1B, 'esc': 0x1B, 'backspace': 0x08,
+    'capslock': 0x14, 'insert': 0x2D, 'delete': 0x2E, 'home': 0x24, 'end': 0x23, 'pageup': 0x21,
+    'pagedown': 0x22, 'up': 0x26, 'down': 0x28, 'left': 0x25, 'right': 0x27, 'backquote': 0xC0, '`': 0xC0,
+    'rightalt': 0xA5, 'rightcontrol': 0xA3, 'rightctrl': 0xA3, 'rightshift': 0xA1, 'pause': 0x13,
+    'scrolllock': 0x91, 'printscreen': 0x2C, 'mousebutton3': 0x04, 'middleclick': 0x04,
+    'mousebutton4': 0x05, 'mousebutton5': 0x06,
+}
+
+
+def parse_hotkey(text):
+    """OpenWhispr hotkey string (e.g. 'Control+Alt+Space', 'MouseButton5', 'F8') to Windows virtual keys."""
+    if not text or not text.strip():
+        return None
+    keys = []
+    for part in text.strip().split('+'):
+        token = part.strip().lower().replace(' ', '')
+        if token in VIRTUAL_KEYS:
+            keys.append(VIRTUAL_KEYS[token])
+        elif len(token) >= 2 and token[0] == 'f' and token[1:].isdigit() and 1 <= int(token[1:]) <= 24:
+            keys.append(0x6F + int(token[1:]))
+        elif len(token) == 1 and token.isalnum():
+            keys.append(ord(token.upper()))
+        else:
+            return None
+    return tuple(keys) or None
+
+
+def read_env(path):
+    """Key=value pairs from OpenWhispr's .env; missing file gives an empty dict."""
+    values = {}
+    try:
+        for line in Path(path).read_text('utf-8').splitlines():
+            if '=' in line and not line.lstrip().startswith('#'):
+                key, value = line.split('=', 1)
+                values[key.strip()] = value.strip()
+    except OSError:
+        pass
+    return values
+
+
+class DictationWatch:
+    """New rows in OpenWhispr's history of any status: the end of a dictation, success or failure."""
+    def __init__(self, path=None):
+        self.feed = OpenWhisprFeed(path)
+
+    def poll(self):
+        feed = self.feed
+        if not feed.available():
+            return []
+        with closing(feed.connect()) as db:
+            if feed.cursor is None:
+                feed.cursor = db.execute('SELECT COALESCE(MAX(id),0) FROM transcriptions').fetchone()[0]
+                return []
+            rows = db.execute('SELECT id,status,text,error_message FROM transcriptions WHERE id>? '
+                              'ORDER BY id LIMIT 20', (feed.cursor,)).fetchall()
+        if rows:
+            feed.cursor = rows[-1][0]
+        return [{'id': r[0], 'status': r[1], 'text': (r[2] or '').strip(), 'error': r[3] or ''} for r in rows]
 
 
 def list_threads(path):

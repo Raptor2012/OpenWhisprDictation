@@ -422,3 +422,39 @@ class VoiceSheenTests(unittest.TestCase):
         impulse=np.zeros(1000,np.float32);impulse[0]=.1
         self.assertGreater(abs(float(VoiceFx().process(impulse)[0])),.01)
         self.assertTrue(np.isfinite(whole).all())
+
+
+class DirectSubmissionTests(unittest.TestCase):
+    def setUp(self):
+        import sqlite3
+        self.tmp=tempfile.TemporaryDirectory(dir=Path(__file__).parent/'runtime');self.addCleanup(self.tmp.cleanup)
+        self.path=Path(self.tmp.name)/'messages.sqlite';self.db=sqlite3.connect(self.path);self.addCleanup(self.db.close)
+        self.db.execute('CREATE TABLE orchestration_v2_projection_messages(thread_id TEXT,role TEXT,created_at TEXT,payload_json TEXT)')
+
+    def add(self,text,thread='chosen',created='2026-11-01T12:01:00.000Z',by='user',role='user'):
+        self.db.execute('INSERT INTO orchestration_v2_projection_messages VALUES(?,?,?,?)',(thread,role,created,json.dumps({'text':text,'createdBy':by})));self.db.commit()
+
+    def matched(self,text='Please inspect the Windows build'):
+        from t3_voice_core import matching_user_submission
+        from datetime import datetime,timezone
+        return matching_user_submission(self.path,'chosen',text,datetime(2026,11,1,12,tzinfo=timezone.utc).timestamp())
+
+    def test_normalized_direct_chat_submission_matches_pending_dictation(self):
+        self.add('Please inspect the Windows build.');self.assertTrue(self.matched())
+
+    def test_dictation_inside_a_longer_manual_message_matches(self):
+        self.add('Extra context first. Please inspect the Windows build. Thanks.');self.assertTrue(self.matched())
+
+    def test_old_other_thread_assistant_and_agent_messages_cannot_clear_review(self):
+        for kwargs in ({'created':'2026-11-01T11:59:59.000Z'},{'thread':'other'},{'role':'assistant'},{'by':'agent'}):
+            self.add('Please inspect the Windows build',**kwargs)
+        self.assertFalse(self.matched())
+
+    def test_unrelated_message_and_short_word_overlap_keep_review(self):
+        self.add('Yes, please continue with another task.')
+        self.assertFalse(self.matched())
+        self.assertFalse(self.matched('yes'))
+
+    def test_missing_database_fails_closed(self):
+        from t3_voice_core import matching_user_submission
+        self.assertFalse(matching_user_submission(self.path.parent/'missing.sqlite','chosen','Text',0))

@@ -326,9 +326,10 @@ def run():
           toggleMicMute();toggleMaeveMute();toggleDock();
           for(const id of ['pVoice','pStop','fTest','mFollow','mCleanup','mStartup','fQuit'])document.getElementById(id).onclick();
           S.review={id:123,text:'Editable preview',title:'Destination'};render();
-          reviewText.value='Edited preview';sendReview();sendReview();render();
+          reviewText.value='Edited preview';reviewTextChanged();sendReview();sendReview();render();
           const confirms=qaCalls.filter(c=>c.name==='confirm_review');
-          const result={calls:qaCalls.slice(),confirms:confirms.length,edited:confirms[0]?.args[1],
+          const editedDraft=qaCalls.some(c=>c.name==='update_review_text'&&c.args[1]==='Edited preview');
+          const result={editedDraft,calls:qaCalls.slice(),confirms:confirms.length,edited:confirms[0]?.args[1],
             disabled:document.getElementById('reviewSend').disabled,
             muteAria:document.getElementById('muteMic').getAttribute('aria-pressed'),
             missingRoles:[...document.querySelectorAll('.ctl,.bbtn,.pill')].filter(el=>el.tabIndex<0||el.getAttribute('role')!=='button').map(el=>el.id),
@@ -339,7 +340,7 @@ def run():
         report['actions'] = actions
         expected={'toggle_mic_mute','toggle_maeve_mute','toggle_dock','toggle_voice','stop','test_voice','toggle_follow_active','toggle_cleanup','toggle_startup','quit'}
         if (not expected.issubset({c['name'] for c in actions['calls']}) or actions['confirms']!=1
-                or actions['edited']!='Edited preview' or not actions['disabled'] or actions['missingRoles']
+                or not actions['editedDraft'] or actions['edited']!='Edited preview' or not actions['disabled'] or actions['missingRoles']
                 or actions['legacyPillToggle'] or actions['legacyHandsfreeControl'] or actions['errors']):
             report['failures'].append({'actions':actions})
         # Native resizing may take much longer than 90 ms; never paint a card in orb space.
@@ -378,6 +379,12 @@ def run():
           return !hovering&&!document.body.classList.contains('hover');
         })()""")
 
+        resizeRace['lateOpenCannotUndoClose']=window.evaluate_js("""(()=>{
+          acceptSnapshot({...S,expanded:true},settingsGeneration,false);
+          const closed=!expanded&&!wantExpanded&&!card.classList.contains('open');
+          if(!closed)setExpanded(false);
+          return closed;
+        })()""")
         window.evaluate_js('api=qaSavedResizeApi;')
         report['resizeRace']=resizeRace
         if not all(resizeRace.values()):report['failures'].append({'resizeRace':resizeRace})
@@ -450,7 +457,7 @@ def run():
         time.sleep(.4)
         calm['stableRadius'] = window.evaluate_js('gl.getUniform(prog,U.uR)')==calm['radius']
         report['shaderVisuals']={'shader':shader,'calm':calm}
-        if (shader['thinking']!=1 or shader['trail']<.9 or not shader['linked'] or not shader['approval'] or shader['error']
+        if (shader['thinking']!=1 or shader['trail']!=0 or not shader['linked'] or not shader['approval'] or shader['error']
                 or any(calm[k]!=0 for k in ('time','flow','trail')) or not calm['particlesClear'] or not calm['stableRadius']):
             report['failures'].append({'shaderVisuals':report['shaderVisuals']})
         resize(340,214)

@@ -30,7 +30,7 @@ import webview
 from diagnostics import write_status
 from live_reader import ContinuousAudio
 from live_reader_core import Message
-from t3_voice_core import (DictationPreview, DictationWatch, VoiceFx, read_agent_activity, audio_device_choices, resolve_audio_device, OpenWhisprFeed, Routes, StreamingFeed, UtteranceGate, cleanup_text,
+from t3_voice_core import (DictationPreview, DictationWatch, VoiceFx, matching_user_submission, read_agent_activity, audio_device_choices, resolve_audio_device, OpenWhisprFeed, Routes, StreamingFeed, UtteranceGate, cleanup_text,
                            audio_feedback, list_threads, parse_hotkey, parse_thread_url, read_env, send_message, transcribe)
 
 ROOT = Path(__file__).resolve().parent
@@ -265,6 +265,8 @@ class Engine:
         self.delivery = self.prefs.get('delivery', 'immediate')
         self.review = None
         self.review_seq = 0
+        self.review_poll_at = 0.0
+        self.dictation_started_wall = 0.0
         self.read_openwhispr_settings()
         self.meta = {'pid': os.getpid(), 'state': 'loading', 'voice': 'Maeve', 'model': 'Phonon 31M',
                      'asr': 'parakeet-0.6b via sherpa ws:6006', 'chunksSpoken': 0, 'utterancesSent': 0,
@@ -363,9 +365,22 @@ class Engine:
                 self.window.native.browser.webview.Focus()
         self.window.native.BeginInvoke(MethodInvoker(apply))
 
+    def update_review_text(self, review_id, text, revision):
+        with self.lock:
+            draft = self.review
+            if (not draft or draft['id'] != review_id or draft.get('sending')
+                    or revision <= draft.get('editVersion',0)):
+                return
+            draft['text'] = text
+            draft['editVersion'] = revision
+
     def confirm_review(self, review_id, text):
         with self.lock:
             if not self.review or self.review['id'] != review_id or self.review.get('sending') or not text.strip():
+                return
+            self.review['text'] = text.strip()
+            self.reconcile_direct_submission(force=True)
+            if self.review is None:
                 return
             draft = self.review
             draft.update(text=text.strip(), sending=True, error='')
@@ -382,6 +397,27 @@ class Engine:
             self.set_review_focus(False)
             self.set_state(self.idle_state())
             self.update_mic()
+
+    def reconcile_direct_submission(self, force=False):
+        draft = self.review
+        now = time.monotonic()
+        if (not draft or draft.get('sending') or self.dictating or (not force and now < self.review_poll_at)
+                or not draft.get('ticket') or not draft.get('text')):
+            return
+        self.review_poll_at = now + .35
+        if not matching_user_submission(DB,draft['ticket'].thread,draft['text'],draft.get('since',time.time())):
+            return
+        self.review = None
+        self.pending = None
+        self.dict_preview_text = ''
+        self.dict_preview_until = 0.0
+        self.dict_state = ''
+        self.dict_until = 0.0
+        self.set_review_focus(False)
+        self.set_state(self.idle_state())
+        self.meta['directSubmissions'] = self.meta.get('directSubmissions',0)+1
+        self.visual_events['sent'] += 1
+        self.update_mic()
 
     def finish_review(self, error=None):
         if not self.review or self.review['id'] != getattr(self, 'review_sending_id', None):
@@ -475,7 +511,7 @@ class Engine:
                 'viewportTarget': list(self.viewport_target),
                 'voiceFx': self.voice_fx,
                 'delivery': self.delivery,
-                'review': {key: self.review.get(key) for key in ('id', 'text', 'title', 'sending', 'error')} if self.review else None,
+                'review': {key: self.review.get(key) for key in ('id', 'text', 'title', 'sending', 'error', 'editVersion')} if self.review else None,
                 'bubble': self.dictation_bubble(now) or (self.bubble if show_bubble else None)}
 
     # ----- routing -----
@@ -956,7 +992,9 @@ class Engine:
                     if self.routes.current(ticket):
                         self.review_seq += 1
                         self.review = {'id': self.review_seq, 'text': text, 'ticket': ticket, 'asr': asr,
+                                       'since': self.dictation_started_wall or (time.time()-max(0,time.perf_counter()-started)),
                                        'started': started, 'title': next((t['title'] for t in self.threads if t['id'] == ticket.thread), '')}
+                        self.review_poll_at = 0.0
                         self.expanded = False
                         self.confirmed = False
                         self.set_state('reviewing')
@@ -999,6 +1037,7 @@ class Engine:
                     self.stop()
                     self.set_state('stopped')
                 elif kind == 'dict-start':
+                    self.dictation_started_wall = time.time()
                     if self.current or not self.jobs.empty():
                         self.stop()  # Maeve must not talk into the dictation
                     if self.review and not self.review.get('sending'):
@@ -1101,6 +1140,7 @@ class Engine:
         except queue.Empty:
             pass
         self.dictation_tick()
+        self.reconcile_direct_submission()
         self.flush_pending(time.monotonic())
         now = time.monotonic()
         if now >= self.agent_poll_at:
@@ -1458,6 +1498,9 @@ class Api:
 
     def set_panel_extra(self, extra):
         self._engine.set_panel_extra(extra)
+
+    def update_review_text(self, review_id, text, revision):
+        self._engine.update_review_text(review_id, text, revision)
 
     def confirm_review(self, review_id, text):
         self._engine.confirm_review(review_id, text)

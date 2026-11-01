@@ -16,7 +16,7 @@ from live_reader_core import Message
 
 def engine(**fields):
     e = t3_voice.Engine.__new__(t3_voice.Engine)
-    defaults = dict(settled_feed_run='',synthesis_done_run='',agent={},visual_events={'sent':0,'interrupt':0},high_contrast=False,reduced_motion=False,choosing_delivery=False, mic_device="", speaker_device="", asr_pending=0, panel_extra=False, review=None, delivery='immediate', follow_active=False, active_thread=None, dock=False, dict_state='', expanded=False, hovered=False, pin_until=0.0, pending=None, state='ready', confirmed=False,
+    defaults = dict(review_poll_at=0,dictation_started_wall=0,settled_feed_run='',synthesis_done_run='',agent={},visual_events={'sent':0,'interrupt':0},high_contrast=False,reduced_motion=False,choosing_delivery=False, mic_device="", speaker_device="", asr_pending=0, panel_extra=False, review=None, delivery='immediate', follow_active=False, active_thread=None, dock=False, dict_state='', expanded=False, hovered=False, pin_until=0.0, pending=None, state='ready', confirmed=False,
                     sent_at=0.0, error_at=0.0, t3_min=False, bubble=None, bubble_until=0.0, bubble_seq=0,
                     bubble_run=None, silent=deque(), meta={}, dict_preview_text='', dict_preview_until=0,
                     dict_preview_session=0, dict_preview=None, dictating=False, mic_level=0, current=None,
@@ -248,7 +248,7 @@ class VisibilityTests(unittest.TestCase):
         self.assertEqual(t3_voice.BUBBLE, e.target_size())
 
     def test_review_does_not_send_until_confirmed_and_only_once(self):
-        ticket = object()  # opaque ticket; the mock verifies identity
+        ticket = SimpleNamespace(thread='chosen')  # opaque ticket; the mock verifies identity
         e = engine(lock=__import__('threading').RLock(), review={'id': 7, 'ticket': ticket, 'started': 1, 'asr': 2},
                    dispatch=Mock(), update_mic=Mock(), set_review_focus=Mock())
         e.confirm_review(6, 'wrong preview')
@@ -690,3 +690,47 @@ class HoverRecoveryTests(unittest.TestCase):
         def cursor(p):p._obj.x,p._obj.y=170,30
         with patch.object(t3_voice.user32,'GetWindowRect',side_effect=rect),patch.object(t3_voice.user32,'GetCursorPos',side_effect=cursor):e.refresh_hover()
         self.assertFalse(e.hovered)
+
+
+class DirectReviewTests(unittest.TestCase):
+    def test_manual_submission_clears_review_and_used_preview_without_resending(self):
+        e=engine(review={'text':'Please inspect the build','ticket':SimpleNamespace(thread='chosen'),'since':10},
+                 review_poll_at=0,state='reviewing',dict_state='done',dict_preview_text='Please inspect the build',dict_preview_until=999999999,
+                 set_review_focus=Mock(),update_mic=Mock(),voice_on=lambda:True,dispatch=Mock())
+        self.assertTrue(hasattr(e,'reconcile_direct_submission'),'direct submit acknowledgement missing')
+        with patch.object(t3_voice,'matching_user_submission',return_value=True):e.reconcile_direct_submission()
+        self.assertIsNone(e.review);self.assertEqual('',e.dict_preview_text);self.assertEqual('',e.dict_state)
+        self.assertEqual('ready',e.state);e.dispatch.assert_not_called()
+
+    def test_in_flight_orb_send_is_not_acknowledged_as_a_manual_submission(self):
+        e=engine(review={'sending':True},review_poll_at=0)
+        self.assertTrue(hasattr(e,'reconcile_direct_submission'),'direct submit acknowledgement missing')
+        with patch.object(t3_voice,'matching_user_submission',return_value=True) as read:e.reconcile_direct_submission()
+        read.assert_not_called();self.assertIsNotNone(e.review)
+
+
+class DirectSubmissionSendRaceTests(unittest.TestCase):
+    def test_manual_submit_is_rechecked_before_orb_send(self):
+        e=engine(lock=threading.RLock(),review={'id':7,'text':'Inspect the build','ticket':SimpleNamespace(thread='chosen'),'since':10,'asr':0,'started':1},
+                 review_poll_at=time.monotonic()+10,state='reviewing',set_review_focus=Mock(),update_mic=Mock(),voice_on=lambda:True,dispatch=Mock())
+        with patch.object(t3_voice,'matching_user_submission',return_value=True):e.confirm_review(7,'Inspect the build')
+        self.assertIsNone(e.review)
+        e.dispatch.assert_not_called()
+
+
+class EditedDirectReviewTests(unittest.TestCase):
+    def test_latest_review_edit_wins_out_of_order_updates(self):
+        e=engine(lock=threading.RLock(),review={'id':7,'text':'Original'})
+        self.assertTrue(hasattr(e,'update_review_text'),'review edit synchronization missing')
+        e.update_review_text(7,'Corrected text',2)
+        e.update_review_text(7,'Stale text',1)
+        self.assertEqual('Corrected text',e.review['text'])
+        e.update_review_text(6,'Wrong review',3)
+        self.assertEqual('Corrected text',e.review['text'])
+
+    def test_confirm_checks_the_current_edited_text_for_manual_submission(self):
+        e=engine(lock=threading.RLock(),review={'id':7,'text':'Original text','ticket':SimpleNamespace(thread='chosen'),'since':10,'asr':0,'started':1},
+                 state='reviewing',set_review_focus=Mock(),update_mic=Mock(),voice_on=lambda:True,dispatch=Mock())
+        with patch.object(t3_voice,'matching_user_submission',side_effect=lambda path,thread,text,since:text=='Corrected text'):
+            e.confirm_review(7,'Corrected text')
+        self.assertIsNone(e.review);e.dispatch.assert_not_called()

@@ -384,6 +384,38 @@ class StreamingFeed(MessageFeed):
         return result
 
 
+def matching_user_submission(path, thread, text, since):
+    """A recent human submission in the captured thread consumed this dictation. Read only."""
+    import sqlite3
+    from datetime import datetime, timezone
+    words = lambda value: re.findall(r"\w+", value.casefold().replace("'", "").replace("\u2019", ""))
+    expected = words(text)
+    if not thread or not expected:
+        return False
+    needle = ' '.join(expected)
+    try:
+        threshold = datetime.fromtimestamp(since, timezone.utc).isoformat(timespec='milliseconds').replace('+00:00', 'Z')
+        with closing(sqlite3.connect(Path(path).resolve().as_uri()+'?mode=ro', uri=True, timeout=.05)) as db:
+            db.execute('PRAGMA query_only=ON')
+            db.set_progress_handler(lambda: 1, 100000)
+            rows = db.execute('SELECT payload_json FROM orchestration_v2_projection_messages '
+                              "WHERE thread_id=? AND role='user' AND created_at>=? ORDER BY rowid DESC LIMIT 32",
+                              (thread,threshold)).fetchall()
+        for raw, in rows:
+            try:
+                data = json.loads(raw)
+                if data.get('createdBy') != 'user' or not isinstance(data.get('text'),str):
+                    continue
+                actual = ' '.join(words(data['text']))
+                if actual == needle or (len(expected)>=4 and ' '+needle+' ' in ' '+actual+' '):
+                    return True
+            except (ValueError, TypeError):
+                continue
+    except (sqlite3.Error, OSError, ValueError, OverflowError):
+        pass
+    return False
+
+
 def read_agent_activity(path, thread):
     """Read only bounded v2 status metadata; never infer an approval from message prose."""
     import sqlite3

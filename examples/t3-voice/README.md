@@ -1,6 +1,13 @@
 # Maeve voice orb for T3 Code
 
-A small always-on-top orb (frameless, transparent WebView2) that gives one [T3 Code](https://t3.chat) thread a voice, fully local. The orb breathes while listening, glows amber and swells with your voice, spins while transcribing and sending, and pulses violet to Maeve's speech. Click it for the card: thread picker, voice toggle, microphone mode, stop, options.
+A small orb that gives one [T3 Code](https://t3.chat) thread a voice, fully local. It is a frameless WebView2 window with true per-pixel transparency (the DWM frame is extended over the whole window and the system backdrop turned off), so only the orb and its glow are drawn on the desktop.
+
+The orb stays out of the way:
+
+- It appears only while you are speaking (after 140 ms of confirmed speech), while your words are transcribed and sent, and while Maeve speaks. It springs in, lingers about a second, then fades and the window is hidden. It never takes focus.
+- When T3 Code is minimized, a speech bubble rises above the orb and types out Maeve's reply at speaking pace, and briefly shows what you said, like a desktop pet.
+- Hover the orb for two buttons: mute your microphone, and mute Maeve. With Maeve muted and T3 minimized, replies still appear silently in the bubble.
+- Ctrl+Alt+M stops Maeve while she speaks; otherwise it summons the orb for a few seconds so you can click it for settings.
 
 Two microphone modes:
 
@@ -32,7 +39,7 @@ venv\Scripts\python pair_t3.py        # one-time: mints a 30-day local MCP token
 "Start Maeve T3 Voice.cmd"            # launches the panel without a console window
 ```
 
-Click the orb, pick a thread, press **Voice on**, and talk. Stop with the Stop pill, Escape, or Ctrl+Alt+M. Options holds **Clean up with OpenWhispr's model** (sends the transcript through OpenWhispr's local llama-server first; costs its cleanup latency) and **Start with Windows**.
+Press Ctrl+Alt+M to summon the orb, click it, pick a thread, press **Voice on**, and talk. Stop with the Stop pill or Ctrl+Alt+M. Options holds **Clean up with OpenWhispr's model** (sends the transcript through OpenWhispr's local llama-server first; costs its cleanup latency) and **Start with Windows**.
 
 ## Files
 
@@ -44,7 +51,7 @@ Click the orb, pick a thread, press **Voice on**, and talk. Stop with the Stop p
 | `live_reader_core.py` | Read-only SQLite feed of T3 messages and Markdown-to-prose cleaning |
 | `live_reader.py` | Earlier reader; the panel reuses its persistent audio device |
 | `pair_t3.py` | Mints the MCP token through T3's pairing-code OAuth flow |
-| `test_*.py` | `python -m unittest -q` runs 15 tests against SQLite fixtures, no audio needed |
+| `test_*.py` | `python -m unittest -q` runs 27 tests (SQLite fixtures, endpointing, orb visibility and bubble rules), no audio needed |
 
 `t3-voice-token.txt`, settings, status and logs are git-ignored. The status file holds timings and counters only, never conversation text.
 

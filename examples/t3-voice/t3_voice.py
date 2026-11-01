@@ -1,6 +1,8 @@
 """Maeve voice orb for T3 Code: frameless transparent web view, hands-free or OpenWhispr-driven."""
 import argparse
+from collections import deque
 import ctypes
+from ctypes import wintypes
 import json
 import math
 import os
@@ -12,6 +14,12 @@ import time
 
 os.environ['HF_HUB_OFFLINE'] = '1'
 os.environ['HF_HUB_DISABLE_TELEMETRY'] = '1'
+# Transparent page background, and keep timers running while the orb window is hidden so it
+# reappears with current state. The env var replaces pywebview's own argument string.
+os.environ['WEBVIEW2_DEFAULT_BACKGROUND_COLOR'] = '00000000'
+os.environ['WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS'] = (
+    '--disable-features=ElasticOverscroll --disable-background-timer-throttling '
+    '--disable-renderer-backgrounding --disable-backgrounding-occluded-windows')
 import numpy as np
 import ptts
 import sounddevice as sd
@@ -28,7 +36,45 @@ ROOT = Path(__file__).resolve().parent
 DB = Path.home() / '.t3/userdata/statev2.sqlite'
 RATE = 16000
 FRAME = 320  # 20 ms at 16 kHz
-SMALL, LARGE = (180, 150), (320, 296)
+COMPACT, BUBBLE, CARD = (180, 150), (340, 300), (320, 296)
+LINGER = 1.2        # seconds the orb stays after the last reason to show it
+FADE = 0.5          # seconds for the exit animation before the window is hidden
+
+# A private handle: setting argtypes on ctypes.windll.user32 would change pywebview's own calls (drag).
+user32 = ctypes.WinDLL('user32')
+kernel32 = ctypes.WinDLL('kernel32')
+user32.SetWindowPos.argtypes = [wintypes.HWND, wintypes.HWND, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+                                ctypes.c_int, ctypes.c_uint]
+user32.MonitorFromPoint.argtypes = [wintypes.POINT, wintypes.DWORD]
+user32.MonitorFromPoint.restype = wintypes.HMONITOR
+HWND_TOPMOST = wintypes.HWND(-1)
+SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOMOVE, SWP_ASYNC = 0x10, 0x1, 0x2, 0x4000
+SW_HIDE, SW_SHOWNOACTIVATE = 0, 4
+EnumWindowsProc = ctypes.WINFUNCTYPE(ctypes.c_bool, wintypes.HWND, wintypes.LPARAM)
+
+
+def find_t3_window():
+    """Top-level visible window of the T3 Code desktop app, or None."""
+    found = []
+
+    def visit(hwnd, _):
+        if not user32.IsWindowVisible(hwnd) or user32.GetWindow(hwnd, 4) or not user32.GetWindowTextLengthW(hwnd):
+            return True
+        pid = wintypes.DWORD()
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        handle = kernel32.OpenProcess(0x1000, False, pid.value)  # PROCESS_QUERY_LIMITED_INFORMATION
+        if handle:
+            size = wintypes.DWORD(520)
+            path = ctypes.create_unicode_buffer(520)
+            ok = kernel32.QueryFullProcessImageNameW(handle, 0, path, ctypes.byref(size))
+            kernel32.CloseHandle(handle)
+            if ok and path.value.lower().endswith('t3 code (beta).exe'):
+                found.append(hwnd)
+                return False
+        return True
+
+    user32.EnumWindows(EnumWindowsProc(visit), 0)
+    return found[0] if found else None
 
 
 class Prefs:
@@ -88,7 +134,28 @@ class Engine:
         self.mode = self.prefs.get('mode', 'handsfree')
         self.cleanup = bool(self.prefs.get('cleanup', False))
         self.window = None
+        self.hwnd = None
+        self.size = COMPACT
         self.expanded = False
+        self.hovered = False
+        self.visible = False
+        self.show_until = 0.0
+        self.hide_at = None
+        self.pin_until = 0.0
+        self.sent_at = self.error_at = 0.0
+        self.confirmed = False
+        self.mic_muted = bool(self.prefs.get('micMuted', False))
+        self.maeve_muted = bool(self.prefs.get('maeveMuted', False))
+        self.t3_min = False
+        self.t3_hwnd = None
+        self.t3_scan_at = 0.0
+        self.bubble = None
+        self.bubble_seq = 0
+        self.bubble_run = None
+        self.bubble_until = 0.0
+        self.silent = deque()
+        self.silent_next = 0.0
+        self.startup_cached = None
         self.meta = {'pid': os.getpid(), 'state': 'loading', 'voice': 'Maeve', 'model': 'Phonon 31M',
                      'asr': 'parakeet-0.6b via sherpa ws:6006', 'chunksSpoken': 0, 'utterancesSent': 0,
                      'utterancesDiscarded': 0}
@@ -126,11 +193,16 @@ class Engine:
             hint = "OpenWhispr's hotkey dictates into this thread. Keep T3's composer unfocused."
         else:
             hint = self.detail or 'Stop: Ctrl+Alt+M or Esc. Headphones recommended.'
+        if self.startup_cached is None:
+            self.startup_cached = self.startup_enabled()
+        show_bubble = self.bubble is not None and self.t3_min and not self.expanded
         return {'state': self.state, 'text': self.text, 'mic': self.mic_level, 'out': self.out_level,
                 'voiceOn': self.voice_on(), 'mode': self.mode, 'thread': self.thread or '', 'threadTitle': title,
                 'threads': [{'id': t['id'], 'title': (t['title'] or '')[:60]} for t in self.threads[:40]],
-                'detail': hint, 'cleanup': self.cleanup, 'startup': self.startup_enabled(),
-                'openwhispr': self.openwhispr.available()}
+                'detail': hint, 'cleanup': self.cleanup, 'startup': self.startup_cached,
+                'openwhispr': self.openwhispr.available(), 'visible': self.visible,
+                'micMuted': self.mic_muted, 'maeveMuted': self.maeve_muted,
+                'bubble': self.bubble if show_bubble else None}
 
     # ----- routing -----
     def select(self, thread):
@@ -195,10 +267,37 @@ class Engine:
                     pass
             else:
                 winreg.SetValueEx(key, 'MaeveT3Voice', 0, winreg.REG_SZ, self.startup_command())
+        self.startup_cached = None
+
+    # ----- mutes -----
+    def toggle_mic_mute(self):
+        with self.lock:
+            self.mic_muted = not self.mic_muted
+            self.prefs.set('micMuted', self.mic_muted)
+            self.pending = None
+            self.confirmed = False
+            self.update_mic()
+            if self.state in ('hearing', 'transcribing'):
+                self.set_state(self.idle_state())
+            self.cue([392] if self.mic_muted else [523, 659], 55)
+
+    def toggle_maeve_mute(self):
+        with self.lock:
+            self.maeve_muted = not self.maeve_muted
+            self.prefs.set('maeveMuted', self.maeve_muted)
+            if self.maeve_muted:
+                self.stop()
+                if self.state == 'speaking':
+                    self.set_state(self.idle_state())
+            else:
+                self.silent.clear()
+                if self.state == 'reading':
+                    self.set_state(self.idle_state())
+            self.cue([440, 330] if self.maeve_muted else [659, 784], 55)
 
     # ----- speech in -----
     def update_mic(self):
-        want = self.ready and self.voice_on() and self.mode == 'handsfree'
+        want = self.ready and self.voice_on() and self.mode == 'handsfree' and not self.mic_muted
         if want and self.mic_stream is None:
             self.vad = webrtcvad.Vad(3)
             self.gate = UtteranceGate(start_frames=2, silence_frames=20)  # 40 ms start, 400 ms end
@@ -275,6 +374,7 @@ class Engine:
                 text = cleanup_text(text)
             self.notice.put(('sending', None))
             send_message(ticket.thread, text)
+            self.notice.put(('you', text))
             self.notice.put(('sent', (len(text.split()), asr_ms, (time.perf_counter() - started) * 1000)))
         except Exception as exc:
             self.notice.put(('send-error', type(exc).__name__ + ': ' + str(exc)[:120]))
@@ -287,7 +387,7 @@ class Engine:
             return
         for text in texts:
             ticket = self.routes.ticket()
-            if ticket is None:
+            if ticket is None or self.mic_muted:
                 continue
             self.stop()  # a new dictation always interrupts the current reply
             threading.Thread(target=self._forward, args=(text, ticket), daemon=True).start()
@@ -302,7 +402,7 @@ class Engine:
         while not self.quit.wait(.025):
             down = all(user32.GetAsyncKeyState(key) & 0x8000 for key in (0x11, 0x12, 0x4D))  # Ctrl+Alt+M
             if down and not held:
-                self.notice.put(('stop', None))
+                self.notice.put(('hotkey', None))
             held = down
 
     def stop(self):
@@ -362,7 +462,7 @@ class Engine:
                     self.cancel = threading.Event()
                     cancel = self.cancel
                     epoch = self.audio.epoch
-                self.notice.put(('speaking', None))
+                self.notice.put(('speaking', message))
                 start = time.perf_counter()
                 first = None
                 with tts.stream(message.text, voice='Maeve') as stream:
@@ -405,9 +505,19 @@ class Engine:
                     self.set_state(self.idle_state())
                     self.update_mic()
                     self.cue([523, 784], 60)
+                    self.pin_until = time.monotonic() + 3.0
+                    self.text = 'Ready · Ctrl+Alt+M'
                 elif kind == 'stop':
                     self.stop()
                     self.set_state('stopped')
+                elif kind == 'hotkey':
+                    if self.current or not self.jobs.empty() or self.state in ('speaking', 'reading'):
+                        self.stop()
+                        self.silent.clear()
+                        self.set_state('stopped')
+                    else:  # summon the orb, or dismiss it if it was summoned
+                        now = time.monotonic()
+                        self.pin_until = 0.0 if now < self.pin_until else now + 6.0
                 elif kind == 'speech-start':
                     if self.pending:
                         self.pending['deadline'] = None  # continuation may be coming; keep holding
@@ -416,6 +526,8 @@ class Engine:
                 elif kind == 'speech-confirmed':
                     if self.current or not self.jobs.empty():
                         self.stop()  # barge-in only on real speech, never on a click or a breath
+                    self.silent.clear()
+                    self.confirmed = True
                     self.set_state('hearing')
                 elif kind == 'speech-end':
                     self.set_state('transcribing')
@@ -425,21 +537,30 @@ class Engine:
                     self.set_state('sending')
                 elif kind == 'discarded':
                     self.meta['utterancesDiscarded'] += 1
+                    self.confirmed = False
                     self.set_state(self.idle_state())
                 elif kind == 'sent':
                     words, asr_ms, total_ms = value
                     self.meta['utterancesSent'] += 1
                     self.meta.update(lastAsrMs=asr_ms, lastSendMs=total_ms)
                     self.set_state('waiting')
+                    self.confirmed = False
+                    self.sent_at = time.monotonic()
                     self.detail = 'Sent %d words · ASR %.0f ms · total %.0f ms' % (words, asr_ms, total_ms)
                     self.cue([784, 1047], 55)
+                elif kind == 'you':
+                    self.show_bubble('you', value, None, 3.0)
                 elif kind == 'send-error':
+                    self.error_at = time.monotonic()
+                    self.confirmed = False
                     self.set_state('error', 'Send failed')
                     self.detail = value[:90]
                     self.meta['lastSendError'] = value
                     self.cue([220, 180], 90)
                 elif kind == 'speaking':
                     self.set_state('speaking')
+                    if value is not None and value.id != 'voice-test':
+                        self.show_reply(value)
                 elif kind == 'first-audio':
                     self.meta['lastFirstAudioMs'] = value
                     self.detail = self.detail.split(' · voice')[0] + ' · voice %.0f ms' % value
@@ -450,6 +571,7 @@ class Engine:
                         self.set_state(self.idle_state())
                 elif kind == 'error':
                     self.ready = False
+                    self.error_at = time.monotonic()
                     self.set_state('error', 'Reader error')
                     self.detail = value[:90]
                     self.meta['error'] = value
@@ -465,6 +587,10 @@ class Engine:
             if self.ready and self.feed and self.voice_on():
                 for message in self.feed.poll():
                     self.last_run = message.run
+                    if self.maeve_muted:
+                        if self.t3_min:
+                            self.silent.append(message)
+                        continue
                     self.jobs.put_nowait((message, self.generation))
                 if self.mode == 'openwhispr' and self.openwhispr.available():
                     self.forward_openwhispr()
@@ -478,20 +604,125 @@ class Engine:
         if self.audio:
             self.meta.update(playedSamples=self.audio.played_samples, outputUnderflows=self.audio.output_underflows)
         write_status(ROOT / 't3-voice-status.json', self.meta)
+        self.desktop_tick()
 
-    # ----- window -----
+    # ----- bubble -----
+    def show_bubble(self, who, text, run, seconds):
+        now = time.monotonic()
+        same = (who == 'maeve' and self.bubble and self.bubble['who'] == 'maeve' and run == self.bubble_run
+                and now < self.bubble_until + LINGER)
+        if same:
+            joined = self.bubble['text'] + ' ' + text
+            cut = max(0, len(joined) - 1200)
+            self.bubble = dict(self.bubble, text=joined[cut:], new=max(0, len(self.bubble['text']) + 1 - cut))
+            self.bubble_until = max(self.bubble_until, now + seconds)
+        else:
+            self.bubble_seq += 1
+            self.bubble = {'id': self.bubble_seq, 'who': who, 'text': text[-1200:], 'new': 0}
+            self.bubble_until = now + seconds
+        self.bubble_run = run
+
+    def show_reply(self, message):
+        self.show_bubble('maeve', message.text, message.run, max(2.5, len(message.text.split()) / 2.8))
+
+    # ----- desktop: T3 state, visibility, placement -----
+    def wants_visible(self, now):
+        if self.expanded or self.hovered or now < self.pin_until or self.pending:
+            return True
+        state = self.state
+        if state in ('speaking', 'reading', 'transcribing', 'sending'):
+            return True
+        if state == 'hearing' and self.confirmed:
+            return True
+        if state == 'waiting' and now < self.sent_at + 2.5:
+            return True
+        if state == 'error' and now < self.error_at + 4.0:
+            return True
+        return self.t3_min and self.bubble is not None and now < self.bubble_until
+
+    def desktop_tick(self):
+        now = time.monotonic()
+        if now >= self.t3_scan_at:
+            if not (self.t3_hwnd and user32.IsWindow(self.t3_hwnd)):
+                self.t3_hwnd = find_t3_window()
+            self.t3_min = self.t3_hwnd is None or bool(user32.IsIconic(self.t3_hwnd))
+            self.t3_scan_at = now + 0.25
+        # Silent reading while Maeve is muted and T3 is minimized.
+        if self.silent and now >= self.silent_next and not self.confirmed:
+            message = self.silent.popleft()
+            self.show_reply(message)
+            self.set_state('reading')
+            self.silent_next = now + max(2.0, len(message.text.split()) / 2.8)
+        elif not self.silent and self.state == 'reading' and now >= self.silent_next:
+            self.set_state(self.idle_state())
+        if self.hwnd is None:
+            return
+        if self.wants_visible(now):
+            self.show_until = now + LINGER
+        visible = now < self.show_until
+        if visible:
+            self.hide_at = None
+            self.place(CARD if self.expanded else BUBBLE if (self.t3_min and self.bubble) else COMPACT)
+            if not self.visible:
+                user32.SetWindowPos(self.hwnd, HWND_TOPMOST, 0, 0, 0, 0,
+                                    SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE | SWP_ASYNC)
+                user32.ShowWindowAsync(self.hwnd, SW_SHOWNOACTIVATE)
+        elif self.visible:
+            self.hide_at = now + FADE
+        if not visible and self.hide_at and now >= self.hide_at:
+            self.hide_at = None
+            self.remember_anchor()
+            user32.ShowWindowAsync(self.hwnd, SW_HIDE)
+            if self.bubble and now > self.bubble_until:
+                self.bubble = None
+        self.visible = visible
+
+    def scale(self):
+        return (user32.GetDpiForWindow(self.hwnd) or 96) / 96
+
+    def anchor(self):
+        rect = wintypes.RECT()
+        user32.GetWindowRect(self.hwnd, ctypes.byref(rect))
+        return (rect.left + rect.right) // 2, rect.bottom
+
+    def remember_anchor(self):
+        cx, bottom = self.anchor()
+        if [cx, bottom] != self.prefs.get('anchor'):
+            self.prefs.set('anchor', [cx, bottom])
+
+    def place(self, size, anchor=None):
+        """Resize around a fixed bottom-centre anchor so the orb itself never jumps."""
+        if size == self.size and anchor is None:
+            return
+        cx, bottom = anchor or self.anchor()
+        scale = self.scale()
+        width, height = int(size[0] * scale), int(size[1] * scale)
+        user32.SetWindowPos(self.hwnd, HWND_TOPMOST, int(cx - width / 2), int(bottom - height), width, height,
+                            SWP_NOACTIVATE | SWP_ASYNC)
+        self.size = size
+
+    def attach(self, hwnd):
+        """Called once the native window exists: position it on the saved anchor or the work-area corner."""
+        self.hwnd = hwnd
+        saved = self.prefs.get('anchor')
+        if not (saved and user32.MonitorFromPoint(wintypes.POINT(saved[0], saved[1] - 20), 0)):
+            area = wintypes.RECT()
+            user32.SystemParametersInfoW(0x30, 0, ctypes.byref(area), 0)
+            scale = self.scale()
+            saved = [area.right - int(120 * scale), area.bottom - int(8 * scale)]
+        self.size = None
+        self.place(COMPACT, anchor=saved)
+        self.visible = True  # navigation shows the window once; the normal fade hides it after the intro
+
+    def set_hover(self, hovered):
+        self.hovered = hovered
+
     def set_expanded(self, expanded):
-        if self.window is None or expanded == self.expanded:
+        if self.hwnd is None or expanded == self.expanded:
             return
         self.expanded = expanded
-        x, y = self.window.x, self.window.y
-        if expanded:
-            self.window.move(x - (LARGE[0] - SMALL[0]) // 2, y - (LARGE[1] - SMALL[1]))
-            self.window.resize(*LARGE)
-        else:
-            self.window.resize(*SMALL)
-            self.window.move(x + (LARGE[0] - SMALL[0]) // 2, y + (LARGE[1] - SMALL[1]))
-            self.prefs.set('pos', [self.window.x, self.window.y])
+        self.show_until = time.monotonic() + LINGER
+        self.place(CARD if expanded else BUBBLE if (self.t3_min and self.bubble) else COMPACT)
 
     def close(self):
         self.quit.set()
@@ -503,9 +734,9 @@ class Engine:
             self.audio.close()
         self.meta['state'] = 'closed'
         write_status(ROOT / 't3-voice-status.json', self.meta)
+        if self.hwnd is not None:
+            self.remember_anchor()
         if self.window is not None:
-            if not self.expanded:
-                self.prefs.set('pos', [self.window.x, self.window.y])
             self.window.destroy()
 
 
@@ -541,25 +772,41 @@ class Api:
     def set_expanded(self, expanded):
         self._engine.set_expanded(bool(expanded))
 
+    def set_hover(self, hovered):
+        self._engine.set_hover(bool(hovered))
+
+    def toggle_mic_mute(self):
+        self._engine.toggle_mic_mute()
+
+    def toggle_maeve_mute(self):
+        self._engine.toggle_maeve_mute()
+
     def quit(self):
         self._engine.close()
 
 
-def make_transparent(window):
-    """WebView2 paints transparent; the WinForms host still needs a colour key to let the desktop through."""
-    try:
-        from System.Drawing import Color
-        from System.Windows.Forms import MethodInvoker
-        form = window.native
+class MARGINS(ctypes.Structure):
+    _fields_ = [('left', ctypes.c_int), ('right', ctypes.c_int), ('top', ctypes.c_int), ('bottom', ctypes.c_int)]
 
-        def apply():
-            form.BackColor = Color.FromArgb(1, 2, 3)
-            form.TransparencyKey = Color.FromArgb(1, 2, 3)
-        form.BeginInvoke(MethodInvoker(apply))
-        time.sleep(.3)
-        window.resize(*SMALL)
-    except Exception:
-        pass
+
+def make_transparent(window, engine):
+    """Per-pixel alpha: extend the DWM frame over the whole window and turn off the system backdrop.
+
+    WebView2 then composites its transparent page straight onto the desktop: no colour key, no fringe.
+    """
+    from System.Drawing import Color
+    from System.Windows.Forms import MethodInvoker
+    form = window.native
+
+    def apply():
+        form.BackColor = Color.Black
+        hwnd = form.Handle.ToInt32()
+        none = ctypes.c_int(1)  # DWMSBT_NONE
+        ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, 38, ctypes.byref(none), 4)
+        margins = MARGINS(-1, -1, -1, -1)
+        ctypes.windll.dwmapi.DwmExtendFrameIntoClientArea(hwnd, ctypes.byref(margins))
+        engine.attach(hwnd)
+    form.BeginInvoke(MethodInvoker(apply))
 
 
 def main():
@@ -567,16 +814,13 @@ def main():
     parser.add_argument('--thread', default=None)
     args = parser.parse_args()
     engine = Engine(args.thread)
-    user32 = ctypes.windll.user32
-    sw, sh = user32.GetSystemMetrics(0), user32.GetSystemMetrics(1)
-    x, y = engine.prefs.get('pos') or [sw - SMALL[0] - 24, sh - SMALL[1] - 70]
     window = webview.create_window('Maeve', url=str(ROOT / 'ui/orb.html'), js_api=Api(engine),
-                                   width=SMALL[0], height=SMALL[1], x=int(x), y=int(y), frameless=True,
-                                   transparent=True, on_top=True, easy_drag=True, resizable=False,
-                                   min_size=(100, 100), background_color='#010203')
+                                   width=COMPACT[0], height=COMPACT[1], x=0, y=0, frameless=True,
+                                   transparent=True, on_top=True, easy_drag=True, resizable=False, focus=False,
+                                   min_size=(100, 100), background_color='#000000')
     engine.window = window
     window.events.closed += engine.close
-    window.events.shown += lambda: threading.Thread(target=make_transparent, args=(window,), daemon=True).start()
+    window.events.shown += lambda: make_transparent(window, engine)
     webview.start(gui='edgechromium', private_mode=True)
 
 

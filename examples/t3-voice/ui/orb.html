@@ -39,8 +39,8 @@
   #bubble { position:absolute; left:50%; bottom:112px; width:300px; margin-left:-150px; box-sizing:border-box;
             background:var(--glass); backdrop-filter:blur(20px) saturate(1.35); border:1px solid var(--line); border-radius:18px;
             padding:9px 13px 10px; box-shadow:0 14px 40px rgba(0,0,0,.45);
-            opacity:0; transform:translateY(10px) scale(.92); transform-origin:50% 100%; transition:opacity .22s var(--soft), transform .5s var(--spring); pointer-events:none; }
-  #bubble.show { opacity:1; transform:none; pointer-events:auto; }
+            opacity:0; transform:translateY(6px); transform-origin:50% 100%; transition:opacity .18s ease-out, transform .18s var(--soft); pointer-events:none; }
+  #bubble.show { opacity:1; transform:none; pointer-events:auto; transition:opacity .22s var(--soft), transform .38s var(--spring); }
   #bubble::after { content:""; position:absolute; left:50%; bottom:-6px; width:12px; height:12px; margin-left:-6px; background:rgba(20,21,27,.92);
                    border-right:1px solid var(--line); border-bottom:1px solid var(--line); transform:rotate(45deg); border-radius:0 0 3px 0; }
   #who { font-size:10px; letter-spacing:.6px; text-transform:uppercase; color:#c4a8ff; margin-bottom:3px; }
@@ -330,19 +330,21 @@ const sAppear = new Spring(0, 190, 15);   // pop-in with a little overshoot
 const sGlow = new Spring(.25, 50, 10), sBusy = new Spring(0, 80, 12), sOff = new Spring(1, 40, 10);
 let spin = 0, lastT = performance.now(), lastState = '', expanded = false, hovering = false;
 function micResponse(rms){ return Math.min(1, Math.sqrt(Math.max(0, rms-.0015)/.075)); }
+function playbackActive(){return !!S.speaking || S.state==='speaking';}
+function visualState(){return ['hearing','dictating'].includes(S.state)?S.state:playbackActive()?'speaking':S.state;}
 
 function frame(now){
   const dt = Math.min(0.05, (now - lastT)/1000); lastT = now;
-  const p = PAL[S.state] || PAL.off;
+  const state = visualState(), p = PAL[state] || PAL.off;
   sA.t = p.a; sB.t = p.b; sC.t = p.c; sGlow.t = p.glow;
-  const audio = (S.state==='hearing'||S.state==='dictating') ? micResponse(S.mic) : S.state==='speaking' ? Math.min(1, S.out*2.8) :
-                S.state==='reading' ? 0.18 + 0.12*Math.sin(now/260) : 0;
+  const audio = (state==='hearing'||state==='dictating') ? micResponse(S.mic) : playbackActive() ? micResponse(S.out) :
+                state==='reading' ? 0.18 + 0.12*Math.sin(now/260) : 0;
   sLevel.t = audio;
   sLevel.k = audio > sLevel.x ? 400 : 110; sLevel.d = audio > sLevel.x ? 36 : 22;
-  sBusy.t = (S.state==='transcribing'||S.state==='sending'||S.state==='processing') ? 1 : 0;
-  sOff.t = S.voiceOn || ['dictating','processing','done','failed'].includes(S.state) ? 0 : 1;
+  sBusy.t = (state==='transcribing'||state==='sending'||state==='processing') ? 1 : 0;
+  sOff.t = S.voiceOn || playbackActive() || ['dictating','processing','done','failed'].includes(state) ? 0 : 1;
   sAppear.t = (S.visible || hovering || expanded || barMode) ? 1 : 0;
-  if (S.state !== lastState) { sScale.v += (S.state==='hearing'||S.state==='speaking'||S.state==='dictating') ? 1.6 : S.state==='done' ? 2.2 : (S.state==='error'||S.state==='failed') ? -1.2 : 0.9; lastState = S.state; }
+  if (state !== lastState) { sScale.v += (state==='hearing'||state==='speaking'||state==='dictating') ? 1.6 : state==='done' ? 2.2 : (state==='error'||state==='failed') ? -1.2 : 0.9; lastState = state; }
   const breathe = 1 + 0.025*Math.sin(now/1100);
   sScale.t = breathe * (1 + 0.10*sLevel.x);
   const lvl = sLevel.step(dt), scale = sScale.step(dt), glow = sGlow.step(dt), b = sBusy.step(dt), off = sOff.step(dt);
@@ -377,7 +379,7 @@ let waveAcc = 0;
 function drawWave(dt, lvl, C){
   waveAcc += dt;
   if (waveAcc > 0.06) { waveAcc = 0; hist.shift(); hist.push(Math.max(0, lvl) * (0.6 + 0.4*Math.random())); }
-  const busy = S.state==='processing'||S.state==='transcribing'||S.state==='sending';
+  const state=visualState(),busy = state==='processing'||state==='transcribing'||state==='sending';
   const canvas = barMode ? wave : orbWave, ctx = barMode ? wctx : octx;
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   const col = `rgb(${C.map(v=>Math.round(Math.min(1,v)*255)).join(',')})`;
@@ -445,7 +447,7 @@ function tickBubble(dt){
   if (words.length < bwords.length) shown = Math.min(shown, words.length);
   bwords = words;
   if (B.who === 'you') shown = words.length;
-  else shown = Math.min(words.length, shown + dt * (S.state === 'speaking' || S.state === 'reading' ? 3.0 : 9.0));
+  else shown = Math.min(words.length, shown + dt * 3.0);  // keep the same pace at playback completion
   const n = Math.floor(shown);
   const visibleTokens=tokens.slice(0,n);
   if (n !== rendered || visibleTokens.some((token,i)=>token.word!==bubbleNodes[i]?.word|| (i<n-1&&token.gap!==bubbleNodes[i]?.gap.textContent))) {
@@ -464,7 +466,7 @@ let reviewId = null;
 let settingsGeneration = 0, settingsPending = 0, settingsWrites = Promise.resolve();
 function setText(el,value){if(el.textContent!==value)el.textContent=value;}
 function render(){
-  document.body.classList.toggle('audio-active',['hearing','dictating','speaking'].includes(S.state));
+  document.body.classList.toggle('audio-active',['hearing','dictating'].includes(S.state)||playbackActive());
   if (S.review) applyExpanded(false);
   else if (!settingsPending && S.expanded !== undefined && expanded !== !!S.expanded) applyExpanded(!!S.expanded);
   document.body.classList.toggle('reviewing', !!S.review);

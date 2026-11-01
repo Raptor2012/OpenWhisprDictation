@@ -18,7 +18,8 @@ def engine(**fields):
     defaults = dict(asr_pending=0, panel_extra=False, review=None, delivery='immediate', follow_active=False, active_thread=None, dock=False, dict_state='', expanded=False, hovered=False, pin_until=0.0, pending=None, state='ready', confirmed=False,
                     sent_at=0.0, error_at=0.0, t3_min=False, bubble=None, bubble_until=0.0, bubble_seq=0,
                     bubble_run=None, silent=deque(), meta={}, dict_preview_text='', dict_preview_until=0,
-                    dict_preview_session=0, dict_preview=None, dictating=False, mic_level=0)
+                    dict_preview_session=0, dict_preview=None, dictating=False, mic_level=0, current=None,
+                    bubble_layout_until=0)
     defaults.update(fields)
     e.__dict__.update(defaults)
     return e
@@ -388,6 +389,41 @@ class VisibilityTests(unittest.TestCase):
 
 
 class BubbleTests(unittest.TestCase):
+    def test_restoring_t3_keeps_native_space_for_the_outgoing_bubble(self):
+        e=engine(t3_min=True,t3_scan_at=float('inf'),hwnd=None,
+                 bubble={'id':1,'who':'maeve','text':'Last words'},bubble_until=110)
+        with patch.object(t3_voice.time,'monotonic',return_value=100):
+            e.desktop_tick()
+        e.t3_min=False
+        with patch.object(t3_voice.time,'monotonic',return_value=100.1):
+            self.assertEqual(t3_voice.BUBBLE,e.target_size())
+        with patch.object(t3_voice.time,'monotonic',return_value=101):
+            self.assertEqual(t3_voice.COMPACT,e.target_size())
+
+    def test_playing_reply_does_not_expire_on_its_estimated_reading_time(self):
+        now=time.monotonic()
+        e=engine(t3_min=True,bubble={'id':1,'who':'maeve','text':'Still speaking'},bubble_run='run-1',
+                 bubble_until=now-2,current=Message('m1','run-1','Still speaking'))
+        self.assertTrue(e.reply_bubble_visible(now))
+        self.assertEqual(t3_voice.BUBBLE,e.target_size())
+
+    def test_native_window_keeps_bubble_space_until_the_exit_fade_finishes(self):
+        for dock in (False,True):
+            e=engine(dock=dock,t3_min=True,bubble={'id':1,'who':'maeve','text':'Finished'},bubble_until=100)
+            with patch.object(t3_voice.time,'monotonic',return_value=100.05):
+                self.assertEqual(t3_voice.BAR_BUBBLE if dock else t3_voice.BUBBLE,e.target_size())
+            with patch.object(t3_voice.time,'monotonic',return_value=101):
+                self.assertEqual(t3_voice.BAR if dock else t3_voice.COMPACT,e.target_size())
+
+    def test_same_playing_run_does_not_reopen_a_new_bubble_after_estimate_expires(self):
+        e=engine()
+        e.show_reply(Message('m1','run-1','First words.'))
+        e.bubble_until=time.monotonic()-10
+        e.current=Message('m2','run-1','More words.')
+        e.show_reply(e.current)
+        self.assertEqual(1,e.bubble['id'])
+        self.assertEqual('First words. More words.',e.bubble['text'])
+
     def test_chunks_of_one_reply_accumulate(self):
         e = engine()
         e.show_reply(Message('m1', 'run-1', 'First sentence.'))
@@ -410,6 +446,23 @@ class BubbleTests(unittest.TestCase):
         e.show_reply(Message('m1', 'run-1', 'b' * 300))
         self.assertEqual(1200, len(e.bubble['text']))
         self.assertTrue(e.bubble['text'].endswith('b' * 300))
+
+
+class PlaybackMeterTests(unittest.TestCase):
+    def test_meter_tracks_played_samples_instead_of_queued_generation(self):
+        with patch('live_reader.sd.RawOutputStream'):
+            audio=t3_voice.ContinuousAudio()
+        cancel=__import__('threading').Event()
+        audio.put((1600).to_bytes(2,'little',signed=True)*480,audio.epoch,cancel)
+        self.assertEqual(0,audio.level)
+        audio.callback(bytearray(960),480,None,SimpleNamespace(output_underflow=False))
+        self.assertAlmostEqual(1600/32768,audio.level,places=5)
+        peak=audio.level
+        audio.callback(bytearray(960),480,None,SimpleNamespace(output_underflow=False))
+        self.assertGreater(audio.level,peak*.7)
+        self.assertLess(audio.level,peak)
+        audio.reset()
+        self.assertEqual(0,audio.level)
 
 
 if __name__ == '__main__':

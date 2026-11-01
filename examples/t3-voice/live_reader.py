@@ -34,6 +34,7 @@ class ContinuousAudio:
         self.played_samples = 0
         self.callbacks = 0
         self.output_underflows = 0
+        self.level = 0.0
         self.stream = sd.RawOutputStream(samplerate=24000, channels=1, dtype='int16',
                                          blocksize=480, latency='low', callback=self.callback)
         self.stream.start()
@@ -57,6 +58,9 @@ class ContinuousAudio:
                 else:
                     self.chunks[0] = chunk[take:]
             self.played_samples += pos // 2
+            samples = np.frombuffer(target, dtype='<i2').astype('f4') / 32768 if pos else None
+            level = float(np.sqrt(np.mean(samples * samples))) if pos else 0.0
+            self.level = max(level, self.level * .86)
             self.cv.notify_all()
 
     def reset(self):
@@ -64,6 +68,7 @@ class ContinuousAudio:
             self.epoch += 1
             self.chunks.clear()
             self.pending = 0
+            self.level = 0.0
             self.cv.notify_all()
             return self.epoch
 

@@ -71,7 +71,7 @@ def run():
             resize(width,height)
             window.evaluate_js('''(()=>{
               const [state,dock,panel]=%s;
-              S=Object.assign(S,{state,dock,expanded:['card','menu','list'].includes(panel),visible:true,
+              S=Object.assign(S,{state,dock,speaking:state==='speaking',expanded:['card','menu','list'].includes(panel),visible:true,
                 mic:.25,out:.25,micMuted:false,maeveMuted:false,review:null,bubble:null});
               hovering=true;document.body.classList.add('hover');
               document.getElementById('menu').classList.toggle('open',panel==='menu');
@@ -163,6 +163,29 @@ def run():
         })()''')
         report['alpha']=alpha
         if alpha['invalid'] or alpha['error']:report['failures'].append({'alpha':alpha})
+        window.evaluate_js('''S.state='ready';S.speaking=false;S.mic=0;S.out=0;S.bubble=null;render();''')
+        time.sleep(1.1)
+        window.evaluate_js('''window.qaPlaybackQuiet=gl.getUniform(prog,U.uR);
+          S.state='done';S.speaking=true;S.out=.02;
+          S.bubble={id:'playback-end',who:'maeve',text:'These final words remain steady as the spoken reply finishes.'};render();tickBubble(1);
+          window.qaBeforeFinish=shown;S.speaking=false;S.state='ready';tickBubble(.2);
+          window.qaFinishAdvance=shown-qaBeforeFinish;
+          S.speaking=true;S.state='done';render();''')
+        time.sleep(.7)
+        playback = window.evaluate_js('''({waveform:getComputedStyle(orbWave).opacity==='1',
+          radiusRatio:gl.getUniform(prog,U.uR)/qaPlaybackQuiet,
+          finishAdvance:qaFinishAdvance,errors:qaErrors.slice()})''')
+        report['playback']=playback
+        if not playback['waveform'] or playback['radiusRatio']<1.02 or playback['finishAdvance']>.61 or playback['errors']:
+            report['failures'].append({'playback':playback})
+        window.evaluate_js('''S.speaking=false;S.state='ready';S.out=0;render();tickBubble(10);S.bubble=null;tickBubble(0);''')
+        exit_opacity=[]
+        for delay in (.04,.08,.12):
+            time.sleep(delay)
+            exit_opacity.append(window.evaluate_js("Number(getComputedStyle(bubbleEl).opacity)"))
+        report['exitOpacity']=exit_opacity
+        if any(later>earlier+.01 for earlier,later in zip(exit_opacity,exit_opacity[1:])) or exit_opacity[-1]>.01:
+            report['failures'].append({'exitOpacity':exit_opacity})
         window.evaluate_js('''(()=>{
           S.review=null;S.expanded=true;applyExpanded(true);render();
           window.qaOldSnapshot={...S,expanded:true};window.qaOldGeneration=typeof settingsGeneration==='number'?settingsGeneration:0;

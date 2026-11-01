@@ -42,6 +42,7 @@ BAR, BAR_BUBBLE, BAR_CARD = (200, 48), (340, 214), (320, 236)   # toolbar mode
 OPENWHISPR_ENV = Path(os.environ.get('APPDATA', '')) / 'OpenWhisprDictation/.env'
 LINGER = 1.2        # seconds the orb stays after the last reason to show it
 FADE = 0.5          # seconds for the exit animation before the window is hidden
+BUBBLE_FADE = 0.35  # keep native bounds while the page finishes its 180 ms bubble exit
 
 # A private handle: setting argtypes on ctypes.windll.user32 would change pywebview's own calls (drag).
 user32 = ctypes.WinDLL('user32')
@@ -204,6 +205,7 @@ class Engine:
         self.visible = False
         self.show_until = 0.0
         self.hide_at = None
+        self.bubble_layout_until = 0.0
         self.pin_until = 0.0
         self.sent_at = self.error_at = 0.0
         self.confirmed = False
@@ -432,11 +434,13 @@ class Engine:
             hint = 'Pinned thread · ' + hint
         if self.startup_cached is None:
             self.startup_cached = self.startup_enabled()
-        show_bubble = self.bubble is not None and time.monotonic() < self.bubble_until and self.t3_min and not self.expanded
+        now = time.monotonic()
+        show_bubble = self.reply_bubble_visible(now)
         state, text = self.state, self.text
         if self.dict_state:
             state, text = self.dict_state, (self.dict_error if self.dict_state == 'failed' else '')
-        return {'state': state, 'text': text, 'mic': self.mic_level, 'out': self.out_level,
+        return {'state': state, 'text': text, 'mic': self.mic_level, 'out': self.audio.level if self.audio else 0.0,
+                'speaking': self.current is not None and not self.maeve_muted,
                 'voiceOn': self.voice_on(), 'mode': self.mode, 'thread': self.thread or '', 'threadTitle': title,
                 'threads': [{'id': t['id'], 'title': (t['title'] or '')[:60]} for t in self.threads[:40]],
                 'detail': hint, 'cleanup': self.cleanup, 'startup': self.startup_cached,
@@ -448,7 +452,7 @@ class Engine:
                 'expanded': self.expanded,
                 'delivery': self.delivery,
                 'review': {key: self.review.get(key) for key in ('id', 'text', 'title', 'sending', 'error')} if self.review else None,
-                'bubble': self.dictation_bubble(time.monotonic()) or (self.bubble if show_bubble else None)}
+                'bubble': self.dictation_bubble(now) or (self.bubble if show_bubble else None)}
 
     # ----- routing -----
     def select(self, thread, automatic=False):
@@ -799,7 +803,6 @@ class Engine:
                             first = (time.perf_counter() - start) * 1000
                             self.notice.put(('first-audio', first))
                         clipped = np.clip(chunk, -1, 1)
-                        self.out_level = float(np.sqrt(np.mean(clipped * clipped)))
                         pcm = (clipped * 32767).astype('<i2').tobytes()
                         if not self.audio.put(pcm, epoch, cancel):
                             break
@@ -993,6 +996,7 @@ class Engine:
         self.meta.update(dock=self.dock, dictationState=self.dict_state, hidePill=self.hide_pill)
         if self.audio:
             self.meta.update(playedSamples=self.audio.played_samples, outputUnderflows=self.audio.output_underflows)
+            self.meta['playbackLevel'] = self.audio.level
         write_status(ROOT / 't3-voice-status.json', self.meta)
         self.desktop_tick()
 
@@ -1029,6 +1033,14 @@ class Engine:
             self.dict_state = ''
 
     # ----- bubble -----
+    def reply_playing(self):
+        bubble, current = self.bubble, self.current
+        return bool(bubble and bubble.get('who') == 'maeve' and current and current.run == self.bubble_run)
+
+    def reply_bubble_visible(self, now):
+        return bool(self.t3_min and not self.expanded and not self.review and self.bubble
+                    and (now < self.bubble_until or self.reply_playing()))
+
     def dictation_bubble(self, now):
         if self.expanded or self.review:
             return None
@@ -1041,10 +1053,11 @@ class Engine:
 
     def show_bubble(self, who, text, run, seconds):
         now = time.monotonic()
+        current = self.current
         if who == 'maeve':
             self.dict_preview_until = 0.0  # let the reply take over from the final user transcript
         same = (who == 'maeve' and self.bubble and self.bubble['who'] == 'maeve' and run == self.bubble_run
-                and now < self.bubble_until + LINGER)
+                and (now < self.bubble_until + LINGER or (current and current.run == run)))
         if same:
             joined = self.bubble['text'] + ' ' + text
             cut = max(0, len(joined) - 1200)
@@ -1067,7 +1080,10 @@ class Engine:
             base = BAR_CARD if self.dock else CARD
             return (base[0], base[1] + (120 if self.panel_extra else 0))
         now = time.monotonic()
-        bubble = self.dictation_bubble(now) or (self.t3_min and self.bubble is not None and now < self.bubble_until)
+        bubble = (self.dictation_bubble(now) or self.reply_bubble_visible(now)
+                  or now < self.bubble_layout_until
+                  or (self.dict_preview_text and now < self.dict_preview_until + BUBBLE_FADE)
+                  or (self.t3_min and self.bubble is not None and now < self.bubble_until + BUBBLE_FADE))
         if self.dock:
             return BAR_CARD if self.expanded else BAR_BUBBLE if bubble else BAR
         return CARD if self.expanded else BUBBLE if bubble else COMPACT
@@ -1084,7 +1100,7 @@ class Engine:
             return True
         if state == 'error' and now < self.error_at + 4.0:
             return True
-        return self.t3_min and self.bubble is not None and now < self.bubble_until
+        return self.reply_bubble_visible(now)
 
     def desktop_tick(self):
         now = time.monotonic()
@@ -1101,6 +1117,10 @@ class Engine:
             self.silent_next = now + max(2.0, len(message.text.split()) / 2.8)
         elif not self.silent and self.state == 'reading' and now >= self.silent_next:
             self.set_state(self.idle_state())
+        if self.reply_playing():
+            self.bubble_until = max(self.bubble_until, now + 1.0)
+        if self.dictation_bubble(now) or self.reply_bubble_visible(now):
+            self.bubble_layout_until = now + BUBBLE_FADE
         if self.hwnd is None:
             return
         if self.wants_visible(now):

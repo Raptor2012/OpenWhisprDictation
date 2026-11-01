@@ -124,16 +124,17 @@ class VoiceFx:
     doubling and shimmer, then a speech-ducked short plate. The final soft ceiling keeps
     mix peaks below PCM clipping. Every state follows samples, never chunk boundaries.
     """
-    def __init__(self, rate=24000, reverb=0.25, chorus=0.23, comb=0.12, ring=0.025, ring_hz=96.0,
-                 seconds=0.48, seed=7, sheen=0.28):
+    def __init__(self, rate=24000, reverb=0.35, chorus=0.23, comb=0.12, ring=0.025, ring_hz=96.0,
+                 seconds=0.65, seed=7, sheen=0.28):
         self.rate, self.wet, self.chorus, self.comb, self.ring, self.ring_hz = rate, reverb, chorus, comb, ring, ring_hz
         self.sheen = sheen
         self.eq = _OverlapAdd(_minimum_phase_eq(rate))
         rng = np.random.default_rng(seed)
         n = int(rate * seconds)
         t = np.arange(n) / rate
-        ir = rng.standard_normal(n) * np.exp(-t / 0.075)
-        for delay, gain in ((0.016, 0.7), (0.021, -0.5), (0.029, 0.42), (0.034, -0.33), (0.047, 0.25)):
+        ir = rng.standard_normal(n) * np.exp(-t / 0.098)                         # a little more space
+        for delay, gain in ((0.016, 0.7), (0.021, -0.5), (0.029, 0.42), (0.034, -0.33), (0.047, 0.25),
+                            (0.062, 0.3), (0.091, -0.2)):                     # faint late echoes: digital chamber
             ir[int(delay * rate)] += gain * 5                                     # dense early reflections
         ir[:int(0.014 * rate)] = 0.0                                              # 14 ms pre-delay: voice stays upfront
         ir = np.convolve(ir, np.ones(3) / 3, mode='same')                         # bright, not dark
@@ -196,10 +197,10 @@ class VoiceFx:
         self.pos += n
         self.drained = 0
         self.tail_live = True
-        mix = y + self.wet * wet / (1.0 + 2.5 * envelope)
+        mix = y + self.wet * wet / (1.0 + 1.8 * envelope)                          # a touch of space under speech too
         return (.92 * np.tanh(mix / .92)).astype(np.float32)
 
-    def drain(self, seconds=0.05, fade=0.35):
+    def drain(self, seconds=0.05, fade=0.5):
         """Continue every DSP state through silence and apply a smooth terminal release."""
         n = max(0, int(seconds * self.rate))
         if n == 0:
@@ -217,7 +218,7 @@ class VoiceFx:
             self.reset()
         return out
 
-    def flush(self, seconds=0.35):
+    def flush(self, seconds=0.5):
         """The audible part of the reverb tail, faded out; the stream is then silent."""
         out = self.drain(seconds, fade=seconds)
         self.reset()

@@ -321,7 +321,7 @@ class VoiceFxDrainTests(unittest.TestCase):
         slices = []
         while fx.tail_live and len(slices) < 50:
             slices.append(fx.drain(0.05))
-        self.assertEqual(7, len(slices))
+        self.assertEqual(10, len(slices))   # 0.5 s tail in 50 ms slices
         self.assertTrue(all(len(s) == 1200 for s in slices))
         self.assertGreater(float(np.max(np.abs(slices[0]))), 1e-3)
         self.assertEqual(0.0, float(np.max(np.abs(fx.process(np.zeros(2400, np.float32))))))
@@ -520,8 +520,8 @@ class CinematicVoiceFxTests(unittest.TestCase):
         x = VoiceFxTests().signal()[:9000]
         a, b = VoiceFx(), VoiceFx()
         a.process(x); b.process(x)
-        whole = a.flush(.35)
-        slices = np.concatenate([b.drain(.05) for _ in range(7)])
+        whole = a.flush(.5)
+        slices = np.concatenate([b.drain(.05) for _ in range(10)])
         np.testing.assert_allclose(whole, slices, atol=1e-5)
         self.assertEqual(0., float(slices[-1]))
         self.assertFalse(b.tail_live)

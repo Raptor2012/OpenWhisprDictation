@@ -104,7 +104,11 @@ function LatestDictation() {
         current
           ? current.map((p, i) =>
               i === index
-                ? { ...p, [field]: value, ...(field === "addWord" && !value ? { addAlias: false } : {}) }
+                ? {
+                    ...p,
+                    [field]: value,
+                    ...(field === "addWord" && !value ? { addAlias: false } : {}),
+                  }
                 : p
             )
           : current
@@ -142,7 +146,9 @@ function LatestDictation() {
 
       {editing ? (
         <div className="rounded-xl border p-4">
-          <p className="mb-2 text-xs text-muted-foreground">{t("dictationApp.correction.editHint")}</p>
+          <p className="mb-2 text-xs text-muted-foreground">
+            {t("dictationApp.correction.editHint")}
+          </p>
           <Textarea
             dir="auto"
             autoFocus
@@ -155,7 +161,9 @@ function LatestDictation() {
             className="text-sm"
           />
           {proposals && proposals.length === 0 && (
-            <p className="mt-3 text-sm text-muted-foreground">{t("dictationApp.correction.none")}</p>
+            <p className="mt-3 text-sm text-muted-foreground">
+              {t("dictationApp.correction.none")}
+            </p>
           )}
           {proposals && proposals.length > 0 && (
             <div className="mt-4 rounded-lg border bg-muted/30 p-3">
@@ -217,7 +225,11 @@ function LatestDictation() {
           </div>
         </div>
       ) : (
-        <div className="rounded-xl border p-5 text-sm whitespace-pre-wrap" aria-live="polite" dir="auto">
+        <div
+          className="rounded-xl border p-5 text-sm whitespace-pre-wrap"
+          aria-live="polite"
+          dir="auto"
+        >
           {latestText || t("dictationApp.emptyHistory")}
         </div>
       )}

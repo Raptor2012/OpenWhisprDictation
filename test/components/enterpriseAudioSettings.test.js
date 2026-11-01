@@ -214,6 +214,7 @@ test("meeting and upload mode picks leave the shared enterprise setup mode to it
         meetingTranscriptionMode: "local",
         uploadTranscriptionMode: "local",
         uploadUseLocalWhisper: true,
+        uploadLocalTranscriptionProvider: "whisper", // an explicit personal choice, independent of build defaults
         enterpriseTranscriptionSetupMode: "auto",
       });
       useEnterpriseIdentityStore.setState({ config: { generation: 1, providers: [record] } });

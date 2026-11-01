@@ -35,8 +35,10 @@ class WindowsKeyManager extends EventEmitter {
   setKeys(keys, options = {}) {
     if (!this.isSupported) return;
     const desired = new Set(keys.filter(Boolean));
-    if (typeof options.swallowMouseButtons === "boolean" &&
-        options.swallowMouseButtons !== this.swallowMouseButtons) {
+    if (
+      typeof options.swallowMouseButtons === "boolean" &&
+      options.swallowMouseButtons !== this.swallowMouseButtons
+    ) {
       this.swallowMouseButtons = options.swallowMouseButtons;
       // The flag is a spawn argument, so running mouse listeners restart.
       for (const key of [...this.listeners.keys()]) {

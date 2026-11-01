@@ -3312,11 +3312,14 @@ registerProcessor("pcm-streaming-processor", PCMStreamingProcessor);
 
     const settings = getSettings();
     // Fail closed and retain the raw transcript when a remote reasoning route is selected.
-    if (!localOnlyDictation.localCleanupAllowed(
-      selectResolvedLLMConfig(settings, "dictationCleanup"),
-      this.voiceAgentRequested || settings.useDictationAgent,
-      this.translationRequested
-    )) return normalizedText;
+    if (
+      !localOnlyDictation.localCleanupAllowed(
+        selectResolvedLLMConfig(settings, "dictationCleanup"),
+        this.voiceAgentRequested || settings.useDictationAgent,
+        this.translationRequested
+      )
+    )
+      return normalizedText;
     const cleanupModel = getEffectiveCleanupModel();
     const isCloud = isCloudCleanupMode();
     const cleanupProvider = settings.cleanupProvider || "auto";

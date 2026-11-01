@@ -1461,7 +1461,13 @@
     "emptyDescription": "أضف الكلمات التي يجب أن يكتبها {{agentName}} بشكل صحيح دائمًا: الأسماء، الأدوات، الاختصارات.",
     "addFirstWord": "أضف كلمتك الأولى",
     "agentDefault": "تمت الإضافة افتراضيًا",
-    "promptLimitNotice": "عدد أحرف قاموسك: {{chars}}. لا تقرأ نماذج Groq وWhisper سوى بضع مئات من الأحرف الأخيرة منه، لذا تعمل القوائم الأقصر بشكل أفضل معها. أما النماذج الأخرى فتحصل على القائمة كاملة."
+    "promptLimitNotice": "عدد أحرف قاموسك: {{chars}}. لا تقرأ نماذج Groq وWhisper سوى بضع مئات من الأحرف الأخيرة منه، لذا تعمل القوائم الأقصر بشكل أفضل معها. أما النماذج الأخرى فتحصل على القائمة كاملة.",
+    "aliases": {
+      "add": "heard as…",
+      "placeholder": "What it sounded like, e.g. sunk it",
+      "remove": "Remove alias {{alias}}",
+      "hint": "Aliases replace the misheard words with this spelling after transcription."
+    }
   },
   "promptStudio": {
     "common": {
@@ -3687,7 +3693,11 @@
         "linuxPttSetupNote": "بعد تشغيل الأمر، قم بتسجيل الخروج وتسجيل الدخول مرة أخرى.",
         "hyprlandConfigWriteWarningTitle": "لن يتم حفظ اختصارات Hyprland بشكل دائم",
         "hyprlandConfigWriteWarningDescription": "لا يمكن لـ OpenWhispr الكتابة إلى {{path}}، لذلك لن تبقى الاختصارات بعد إعادة تحميل تكوين Hyprland. تأكد من وجود الملف وقابليته للكتابة.",
-        "hyprlandUnbindDescription": "في Hyprland، يستحوذ OpenWhispr على الاختصار المحدد. سيتم فك أي ارتباط Hyprland موجود يستخدم مجموعة المفاتيح نفسها عندما يسجل OpenWhispr اختصاره."
+        "hyprlandUnbindDescription": "في Hyprland، يستحوذ OpenWhispr على الاختصار المحدد. سيتم فك أي ارتباط Hyprland موجود يستخدم مجموعة المفاتيح نفسها عندما يسجل OpenWhispr اختصاره.",
+        "mousePassThrough": {
+          "title": "Keep the mouse button's normal action",
+          "description": "Off: the bound side button only controls dictation, so apps never see its Back or Forward action. On: the button also does what it normally does."
+        }
       },
       "meetingHotkey": {
         "title": "مفتاح اختصار وضع الاجتماع",
@@ -5288,6 +5298,50 @@
       "bootstrapUnreadable": "لا يستطيع OpenWhispr قراءة ملف التهيئة. اطلب من قسم تقنية المعلومات جعله قابلًا للقراءة لحسابك.",
       "bootstrapMismatch": "ملف التهيئة لا يطابق حسابك أو مساحة العمل هذه أو بيانات الاعتماد المُعدّة لها.",
       "testLinkOtherWorkspace": "رابط الاختبار هذا لمساحة عمل أخرى. انتقل إلى مساحة العمل تلك وافتح الرابط مرة أخرى."
+    }
+  },
+  "dictationApp": {
+    "title": "Dictation",
+    "subtitle": "Speak into any application. Everything runs on this computer.",
+    "openSettings": "Settings",
+    "ready": "Ready to dictate",
+    "pressPrefix": "Press",
+    "pressSuffix": "to dictate.",
+    "insertedHint": "Your words are inserted at the cursor. The floating indicator shows recording and processing status; if the target field cannot be verified, the text is copied to the clipboard instead.",
+    "microphone": "Microphone",
+    "keyboardMouse": "Keyboard & mouse",
+    "speechModel": "Speech model",
+    "cleanupModel": "Cleanup model",
+    "dictionary": "Dictionary",
+    "backToDictation": "Back to dictation",
+    "loadingDictionary": "Loading dictionary…",
+    "loading": "Loading dictation…",
+    "latest": "Latest dictation",
+    "copy": "Copy",
+    "copied": "Copied",
+    "historyError": "Could not load dictation history.",
+    "emptyHistory": "Your latest dictation will appear here.",
+    "correction": {
+      "edit": "Fix spelling",
+      "editHint": "Correct any misheard words below, then review the suggestions. Only this text is read; nothing is collected from other apps.",
+      "suggest": "Suggest dictionary words",
+      "cancel": "Cancel",
+      "none": "No spelling corrections were found in your edit.",
+      "proposeTitle": "Add these words to your dictionary?",
+      "proposeDescription": "Checked words are added as preferred spellings. Add \"heard as\" aliases so the misheard form is replaced automatically next time.",
+      "alsoAlias": "Also replace “{{heard}}” with it",
+      "addSelected": "Add selected",
+      "added": "Added {{count}} word(s) to your dictionary.",
+      "undo": "Undo"
+    },
+    "unverifiedPaste": {
+      "title": "Transcript ready to paste",
+      "description": "The target field could not be verified (for example a password field or a changed window), so nothing was typed. The transcript is on your clipboard; paste it manually.",
+      "descriptionClipboardFailed": "The target field could not be verified, so nothing was typed. Copy the transcript below and paste it manually."
+    },
+    "settings": {
+      "localOnlyDescription": "This app only transcribes on this device. Select local transcription to use an installed model.",
+      "useLocalTranscription": "Use local transcription"
     }
   }
 }

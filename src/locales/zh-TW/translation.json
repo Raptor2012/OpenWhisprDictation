@@ -2004,7 +2004,11 @@
         "linuxPttSetupNote": "執行指令後，請登出並重新登入。",
         "hyprlandConfigWriteWarningTitle": "Hyprland 按鍵綁定不會保留",
         "hyprlandConfigWriteWarningDescription": "OpenWhispr 無法寫入 {{path}}，因此重新載入 Hyprland 設定後按鍵綁定不會保留。請確認該檔案存在且可寫入。",
-        "hyprlandUnbindDescription": "在 Hyprland 上，OpenWhispr 會佔用所選快捷鍵。當 OpenWhispr 註冊該快捷鍵時，任何使用相同按鍵組合的既有 Hyprland 綁定都會被解除。"
+        "hyprlandUnbindDescription": "在 Hyprland 上，OpenWhispr 會佔用所選快捷鍵。當 OpenWhispr 註冊該快捷鍵時，任何使用相同按鍵組合的既有 Hyprland 綁定都會被解除。",
+        "mousePassThrough": {
+          "title": "Keep the mouse button's normal action",
+          "description": "Off: the bound side button only controls dictation, so apps never see its Back or Forward action. On: the button also does what it normally does."
+        }
       },
       "meetingHotkey": {
         "title": "會議模式快捷鍵",
@@ -3597,7 +3601,13 @@
     "emptyTitle": "將詞語加入字典",
     "emptyDescription": "新增希望{{agentName}}始終辨識正確的詞：名字、工具、縮寫。",
     "addFirstWord": "新增第一個詞",
-    "agentDefault": "預設加入"
+    "agentDefault": "預設加入",
+    "aliases": {
+      "add": "heard as…",
+      "placeholder": "What it sounded like, e.g. sunk it",
+      "remove": "Remove alias {{alias}}",
+      "hint": "Aliases replace the misheard words with this spelling after transcription."
+    }
   },
   "insights": {
     "title": "統計",
@@ -5166,6 +5176,50 @@
       "bootstrapUnreadable": "OpenWhispr 無法讀取引導檔案。請 IT 部門讓您的帳號可以讀取。",
       "bootstrapMismatch": "引導檔案與您的帳號、此工作區或其設定的憑證不符。",
       "testLinkOtherWorkspace": "此測試連結對應的是其他工作區。請切換到該工作區，然後重新開啟連結。"
+    }
+  },
+  "dictationApp": {
+    "title": "Dictation",
+    "subtitle": "Speak into any application. Everything runs on this computer.",
+    "openSettings": "Settings",
+    "ready": "Ready to dictate",
+    "pressPrefix": "Press",
+    "pressSuffix": "to dictate.",
+    "insertedHint": "Your words are inserted at the cursor. The floating indicator shows recording and processing status; if the target field cannot be verified, the text is copied to the clipboard instead.",
+    "microphone": "Microphone",
+    "keyboardMouse": "Keyboard & mouse",
+    "speechModel": "Speech model",
+    "cleanupModel": "Cleanup model",
+    "dictionary": "Dictionary",
+    "backToDictation": "Back to dictation",
+    "loadingDictionary": "Loading dictionary…",
+    "loading": "Loading dictation…",
+    "latest": "Latest dictation",
+    "copy": "Copy",
+    "copied": "Copied",
+    "historyError": "Could not load dictation history.",
+    "emptyHistory": "Your latest dictation will appear here.",
+    "correction": {
+      "edit": "Fix spelling",
+      "editHint": "Correct any misheard words below, then review the suggestions. Only this text is read; nothing is collected from other apps.",
+      "suggest": "Suggest dictionary words",
+      "cancel": "Cancel",
+      "none": "No spelling corrections were found in your edit.",
+      "proposeTitle": "Add these words to your dictionary?",
+      "proposeDescription": "Checked words are added as preferred spellings. Add \"heard as\" aliases so the misheard form is replaced automatically next time.",
+      "alsoAlias": "Also replace “{{heard}}” with it",
+      "addSelected": "Add selected",
+      "added": "Added {{count}} word(s) to your dictionary.",
+      "undo": "Undo"
+    },
+    "unverifiedPaste": {
+      "title": "Transcript ready to paste",
+      "description": "The target field could not be verified (for example a password field or a changed window), so nothing was typed. The transcript is on your clipboard; paste it manually.",
+      "descriptionClipboardFailed": "The target field could not be verified, so nothing was typed. Copy the transcript below and paste it manually."
+    },
+    "settings": {
+      "localOnlyDescription": "This app only transcribes on this device. Select local transcription to use an installed model.",
+      "useLocalTranscription": "Use local transcription"
     }
   }
 }

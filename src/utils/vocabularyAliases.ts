@@ -31,7 +31,11 @@ export function aliasExists(alias: string, snippets: Snippet[] | null | undefine
  * itself (it would replace a word with itself) and a trigger that is already
  * taken, returning the input list unchanged in those cases.
  */
-export function addAlias(snippets: Snippet[] | null | undefined, alias: string, word: string): Snippet[] {
+export function addAlias(
+  snippets: Snippet[] | null | undefined,
+  alias: string,
+  word: string
+): Snippet[] {
   const list = snippets ?? [];
   const trigger = alias.trim();
   const replacement = word.trim();

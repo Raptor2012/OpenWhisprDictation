@@ -3,9 +3,10 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 
-const read = (relativePath) => fs.readFileSync(path.join(__dirname, "../..", relativePath), "utf8");
+const read = (relativePath) =>
+  fs.readFileSync(path.join(__dirname, "../..", relativePath), "utf8").replace(/\r\n/g, "\n");
 
-test("the leaderboard is tabbed inside the Insights view", () => {
+test("local dictation omits cloud Insights while the retained Insights page keeps its leaderboard tab", () => {
   const controlPanel = read("src/components/ControlPanel.tsx");
   const sidebar = read("src/components/ControlPanelSidebar.tsx");
   const insights = read("src/components/InsightsView.tsx");
@@ -15,7 +16,8 @@ test("the leaderboard is tabbed inside the Insights view", () => {
   assert.equal(sidebar.includes('{ id: "leaderboard"'), false);
   assert.equal(controlPanel.includes('activeView === "leaderboard"'), false);
   assert.equal(controlPanel.includes('import("./LeaderboardView")'), false);
-  assert.ok(controlPanel.includes("<InsightsView"));
+  assert.equal(controlPanel.includes("<InsightsView"), false);
+  assert.ok(controlPanel.includes("<LatestDictation"));
   assert.ok(insights.includes('useState("usage")'));
   assert.equal(insights.match(/<TabsTrigger/g)?.length, 2);
   assert.ok(insights.includes('value="usage"'));

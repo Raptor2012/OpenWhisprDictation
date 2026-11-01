@@ -409,9 +409,14 @@ function migrateProviderSettings() {
   if (localStorage.getItem("_providerSettingsMigrated") === "1") return;
 
   // New profiles start locally; preserve existing profiles for the legacy migration.
-  const fresh = ["useLocalWhisper", "cloudTranscriptionMode", "reasoningProvider", "cloudReasoningMode", "transcriptionMode", "cleanupMode"].every(
-    key => localStorage.getItem(key) === null
-  );
+  const fresh = [
+    "useLocalWhisper",
+    "cloudTranscriptionMode",
+    "reasoningProvider",
+    "cloudReasoningMode",
+    "transcriptionMode",
+    "cleanupMode",
+  ].every((key) => localStorage.getItem(key) === null);
   if (fresh) {
     localStorage.setItem("useLocalWhisper", "true");
     localStorage.setItem("cloudReasoningMode", "byok");

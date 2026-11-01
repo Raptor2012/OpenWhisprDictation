@@ -575,6 +575,23 @@ def run():
         })()""")
         report['idleMotion']=idle
         if not all(idle[k] for k in ('idle','flowing','changed','subtle')):report['failures'].append({'idleMotion':idle})
+        # Tapping the orb answers with a fluid press, swirl and wave that settles back on its own.
+        window.evaluate_js("window.qaTapRest=gl.getUniform(prog,U.uR);handleOrbClick({stopPropagation(){},detail:1});")
+        time.sleep(.12)
+        tap=window.evaluate_js("""({tap:typeof U.uTap==='object'&&U.uTap?gl.getUniform(prog,U.uTap):null,
+          wave:typeof U.uTapWave==='object'&&U.uTapWave?Array.from(gl.getUniform(prog,U.uTapWave)):null,
+          radiusMoved:Math.abs(gl.getUniform(prog,U.uR)/qaTapRest-1)>.02,error:gl.getError()})""")
+        capture('orb-tap-fluid')
+        time.sleep(1.4)
+        tap['settled']=window.evaluate_js("Math.abs(gl.getUniform(prog,U.uTap))<.01&&gl.getUniform(prog,U.uTapWave)[1]<.01")
+        window.evaluate_js("applyExpanded(false);wantExpanded=false;S.reducedMotion=true;render();handleOrbClick({stopPropagation(){},detail:1});")
+        time.sleep(.14)
+        tap['calm']=window.evaluate_js("gl.getUniform(prog,U.uTap)===0&&gl.getUniform(prog,U.uTapWave)[1]===0")
+        window.evaluate_js("applyExpanded(false);wantExpanded=false;S.reducedMotion=false;render();")
+        report['tapFeedback']=tap
+        if (tap['tap'] is None or tap['wave'] is None or abs(tap['tap'])<.2 or tap['wave'][1]<.05 or tap['wave'][0]<=1
+                or not tap['radiusMoved'] or tap['error'] or not tap['settled'] or not tap['calm']):
+            report['failures'].append({'tapFeedback':tap})
         stageLayouts=[]
         for dock,panel in [(False,'card'),(False,'list'),(False,'devices'),(False,'appearance'),(True,'card'),(True,'devices')]:
             window.evaluate_js("""(()=>{

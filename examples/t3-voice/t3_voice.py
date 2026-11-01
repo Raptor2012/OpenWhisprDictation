@@ -27,6 +27,7 @@ import sounddevice as sd
 import webrtcvad
 import webview
 
+from audio_duck import AudioDucker
 from diagnostics import write_status
 from live_reader import ContinuousAudio
 from live_reader_core import Message
@@ -311,6 +312,8 @@ class Engine:
             initial = self.threads[0]['id']
         if initial:
             self.select(initial, automatic=True)
+        # Other apps' audio drops to 10% while Maeve speaks or the user holds dictation.
+        self.ducker = AudioDucker(ROOT / 't3-voice-duck.json').start()
         threading.Thread(target=self.synthesize, daemon=True).start()
         threading.Thread(target=self.hotkey, daemon=True).start()
         threading.Thread(target=self.loop, daemon=True).start()
@@ -1046,9 +1049,24 @@ class Engine:
             try:
                 with self.lock:
                     self.tick()
+                    self.update_ducking()
             except Exception as exc:
                 self.meta['loopError'] = type(exc).__name__
             time.sleep(.04)
+
+    def ducking_wanted(self):
+        """Maeve audibly speaking, or the dictation button held."""
+        return (self.current is not None and not self.maeve_muted) or self.dict_state == 'dictating'
+
+    def update_ducking(self):
+        ducker = getattr(self, 'ducker', None)
+        if ducker is None:
+            return
+        ducker.want = self.ducking_wanted()
+        self.meta['ducking'] = ducker.factor < 1.0
+        self.meta['duckedSessions'] = ducker.ducked
+        if ducker.error:
+            self.meta['duckError'] = ducker.error
 
     def tick(self):
         try:
@@ -1583,6 +1601,8 @@ class Engine:
             self.mic_stream.close()
         if self.audio:
             self.audio.close()
+        if getattr(self, 'ducker', None):
+            self.ducker.stop()     # fades other apps back to their own levels before exit
         self.meta['state'] = 'closed'
         write_status(ROOT / 't3-voice-status.json', self.meta)
         if self.hwnd is not None:

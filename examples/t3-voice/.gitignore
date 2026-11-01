@@ -10,3 +10,4 @@ __pycache__/
 t3-voice-prefs.json
 *.png
 runtime/
+t3-voice-duck.json

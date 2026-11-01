@@ -926,3 +926,22 @@ class SurfaceRegionOwnershipTests(unittest.TestCase):
         with patch.object(t3_voice.gdi32,'CreateRectRgn',return_value=0),patch.object(t3_voice.user32,'SetWindowRgn') as apply:
             e.set_hit_regions([{'id':'orbwrap','x':80,'y':330,'width':180,'height':150}])
         apply.assert_not_called()
+
+
+class BackgroundAudioDuckingTests(unittest.TestCase):
+    def test_ducks_while_maeve_speaks_or_dictation_is_held_only(self):
+        cases = [(dict(current=object(), maeve_muted=False, dict_state=''), True),
+                 (dict(current=object(), maeve_muted=True, dict_state=''), False),
+                 (dict(current=None, maeve_muted=False, dict_state='dictating'), True),
+                 (dict(current=None, maeve_muted=False, dict_state='processing'), False),
+                 (dict(current=None, maeve_muted=False, dict_state=''), False)]
+        for fields, wanted in cases:
+            with self.subTest(**{k: bool(v) if k == 'current' else v for k, v in fields.items()}):
+                self.assertEqual(wanted, engine(**fields).ducking_wanted())
+
+    def test_loop_hands_the_decision_to_the_ducker_and_reports_it(self):
+        class Ducker: want = False; factor = .4; ducked = 2; error = ''
+        e = engine(current=None, maeve_muted=False, dict_state='dictating', ducker=Ducker())
+        e.update_ducking()
+        self.assertTrue(e.ducker.want)
+        self.assertEqual((True, 2), (e.meta['ducking'], e.meta['duckedSessions']))

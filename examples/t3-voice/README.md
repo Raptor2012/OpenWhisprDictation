@@ -56,6 +56,8 @@ Use the **Transcript delivery** dropdown in settings to choose:
 
 **Options → Audio devices…** chooses Maeve's speaker and the microphone for orb levels and live preview; both default to System default, apply immediately, and survive restarts. OpenWhispr records dictation using its own microphone setting.
 
+While Maeve speaks, or while you hold the dictation button, every other app's audio fades to 10% of its own level (`audio_duck.py`, WASAPI per-app session volumes) and fades back afterwards. Maeve's own process is never ducked, the master volume and default devices are never touched, and a volume you change in the Volume Mixer mid-duck is the level that gets restored. The original levels are journaled in `t3-voice-duck.json` so a crash mid-duck is undone on the next start.
+
 After a successful orb send, the matching dictated copy is removed from the same T3 chat draft using its accessibility value API. Other typed text is preserved. Ambiguous copies, a changed destination, new typing, or an active chat editor are left intact; cleanup failure never turns a successful send into a retry. The original pasted wording is retained for cleanup even if you edit the orb review.
 
 If you submit dictated text directly in T3 Code's chat, the orb clears the matching pending review and used live-preview text automatically, without sending it again. Unrelated messages leave the review intact.
@@ -72,7 +74,7 @@ The follow, pin and delivery preferences survive restarts. Settings grow upward 
 | `live_reader_core.py` | Read-only SQLite feed of T3 messages and Markdown-to-prose cleaning |
 | `live_reader.py` | Earlier reader; the panel reuses its persistent audio device |
 | `pair_t3.py` | Mints the MCP token through T3's pairing-code OAuth flow |
-| `test_*.py` | `python -m unittest test_orb_logic test_t3_voice_core test_live_reader -q` runs 143 tests, including audio-device resolution and switching, frequency-specific microphone/playback feedback, quiet-audio sensitivity, bubble completion/fade timing, bounded hold-only previews, stale-result rejection, held-recording completion races, meter peak retention, both overlay variants, work-area clamping, review failure/retry and routing; no audio needed |
+| `test_*.py` | `python -m unittest test_orb_logic test_t3_voice_core test_live_reader test_audio_duck -q` runs 155 tests, including background-audio ducking, exact restore and crash recovery,, including audio-device resolution and switching, frequency-specific microphone/playback feedback, quiet-audio sensitivity, bubble completion/fade timing, bounded hold-only previews, stale-result rejection, held-recording completion races, meter peak retention, both overlay variants, work-area clamping, review failure/retry and routing; no audio needed |
 | `verify_orb_ui.py` | Optional WebView2 verification: `python verify_orb_ui.py` checks 46 state/layout combinations, the transcribing placeholder, frequency-band response with quiet PCM fixtures, readable first lines and a scroll-only top fade, a monotonic completion fade, live word revisions, dismissal races and control callbacks in an isolated demo. It never opens the mic, simulates input or sends to T3. Evidence is written beneath `runtime/orb-ui-qa/`. |
 
 `t3-voice-token.txt`, settings, status and logs are git-ignored. The status file holds timings and counters only, never conversation text.
@@ -104,6 +106,8 @@ Options → **Techno audio effect** (on by default) now uses a stronger cinemati
 ## Visual states and accessibility
 
 Thinking keeps its brighter blue and luminous label even with voice input disabled, and shares the talking orb's continuous fluid nebula, with a gentle inward twist, soft inner illumination, and visibly glowing motes curling inward around the core. Idle has a slower, low-amplitude fluid drift and soft core illumination while the orb is visible. Thinking has no sharp spiral arms or orbiting busy indicator; transcription and sending retain a small progress comet. Actual unresolved approval requests add an amber pulsing edge and keep the orb visible. Questions use a separate waiting-for-answer state. A stable, subtle rim accent identifies the selected thread, and faint stars shimmer inside the idle core. These indicators read local T3 status metadata; no approval is inferred from conversation text or acted on automatically.
+
+Tapping the orb answers in the same fluid language: it squashes slightly while pressed, then gives a jelly bounce as the nebula swirls and unwinds, the core and rim brighten, and a soft wave flows outward when settings open or inward when they close. Reduced motion turns this off.
 
 The settings, device, Appearance and speech panels retain a dark glass surface with a fine top highlight. Short, light shadows fade out in the transparent window gutter, avoiding a clipped rectangular vignette on light desktops. Short replies stay compact; longer replies reserve up to 113px of text space before words reveal. Scroll up to read older words without being pulled back down; return to the bottom to resume following. Live words rise from the orb direction and final dictation text settles briefly.
 

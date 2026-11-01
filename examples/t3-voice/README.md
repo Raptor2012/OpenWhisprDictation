@@ -14,15 +14,15 @@ The orb stays out of the way:
 
 Two microphone modes:
 
-- **Hands-free** (default): the orb owns the microphone. WebRTC VAD endpoints after 400 ms of silence; speaking again interrupts Maeve.
+- **Hands-free** (default): the orb owns the microphone. WebRTC VAD waits for 1.2 seconds of silence, keeping ordinary half-second pauses inside one recording; speaking again interrupts Maeve.
 - In either mode, starting OpenWhispr dictation stops Maeve and suppresses hands-free capture during recording and for 600 ms after release. Dictation is therefore not also captured as a hands-free T3 utterance.
 - **OpenWhispr hotkey**: dictate with OpenWhispr Dictation's own hotkey. Each completed dictation in OpenWhispr's local history is forwarded to the thread. OpenWhispr also pastes into the focused field, so keep T3's composer unfocused in this mode.
 
 The loop:
 
-1. You speak. WebRTC VAD endpoints the utterance after 400 ms of silence.
+1. You speak. WebRTC VAD keeps natural pauses inside the utterance and endpoints after 1.2 seconds of silence.
 2. OpenWhispr's running Parakeet 0.6B service (sherpa-onnx WebSocket on `127.0.0.1:6006`) transcribes it in about 300 ms.
-3. The text is posted to the chosen T3 thread over T3's local MCP endpoint (about 20 ms per call).
+3. A completed sentence gets 650 ms of continuation grace after ASR; an unfinished fragment gets 1.1 seconds. Resuming speech suspends delivery and joins the continuation. Punctuation or a long transcript never bypasses this grace, and pending ASR must finish before delivery. The selected delivery mode then sends, previews, or drafts the text.
 4. Maeve (Phonon 31M, British English, CPU) reads the reply sentence by sentence while it is still streaming. First audio in about 40 ms. Speaking again interrupts her.
 
 Nothing leaves the machine and no provider tokens are involved. Each spoken message is one ordinary turn for whichever model runs the thread.
@@ -65,14 +65,16 @@ The follow, pin and delivery preferences survive restarts. Settings grow upward 
 | `live_reader_core.py` | Read-only SQLite feed of T3 messages and Markdown-to-prose cleaning |
 | `live_reader.py` | Earlier reader; the panel reuses its persistent audio device |
 | `pair_t3.py` | Mints the MCP token through T3's pairing-code OAuth flow |
-| `test_*.py` | `python -m unittest test_orb_logic test_t3_voice_core test_live_reader -q` runs 47 tests (SQLite fixtures, exact desktop routes, following/pinning, review confirmation, composer draft guards, delivery modes, dictation, capture suppression, toolbar sizing, visibility and bubble rules), no audio needed |
+| `test_*.py` | `python -m unittest test_orb_logic test_t3_voice_core test_live_reader -q` runs 51 tests (including natural pauses, continuation merging and delayed ASR, plus routing, review, draft and UI rules), no audio needed |
 
 `t3-voice-token.txt`, settings, status and logs are git-ignored. The status file holds timings and counters only, never conversation text.
 
 ## Tuning
 
-- Silence window: `UtteranceGate(start_frames=2, silence_frames=20)` in `t3_voice.py`. 20 ms per frame.
-- Shorter than 300 ms starts splitting slow sentences into separate turns, which costs extra model usage.
+- Silence window: `UtteranceGate()` defaults to `silence_frames=60` in `t3_voice_core.py`. 20 ms per frame, or 1.2 seconds.
+- Continuation grace: `Engine.SENTENCE_GRACE=0.65` and `Engine.HOLD_SECONDS=1.1`. The whole turn waits while a new capture or ASR is in progress.
+- OpenWhispr push-to-talk remains controlled by holding and releasing its configured key. These hands-free timings do not change its recorder or settings.
+- The orb uses premultiplied alpha for WebView2 transparency, a restrained audio-responsive halo, and continuous noise phase. Speech does not draw expanding ripple rings.
 
 ## Cleanup model benchmark (OpenWhispr Dictation, 2026-11-01)
 

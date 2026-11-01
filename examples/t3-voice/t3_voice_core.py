@@ -135,7 +135,7 @@ class StreamingFeed(MessageFeed):
 
 class UtteranceGate:
     """20-ms frames: interrupt on sustained speech; finish after a silence gap."""
-    def __init__(self, start_frames=2, silence_frames=20, max_frames=1500, confirm_frames=7):
+    def __init__(self, start_frames=2, silence_frames=60, max_frames=1500, confirm_frames=7):
         self.start_frames, self.silence_frames, self.max_frames = start_frames, silence_frames, max_frames
         self.confirm_frames = confirm_frames
         self.pre = deque(maxlen=10)

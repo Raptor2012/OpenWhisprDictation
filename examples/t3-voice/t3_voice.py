@@ -203,6 +203,8 @@ class Engine:
         self.follow_active = bool(self.prefs.get('followActive', True))
         self.active_thread = None
         self.capture_ticket = None
+        self.asr_pending = 0
+        self.asr_lock = threading.Lock()
         self.delivery = self.prefs.get('delivery', 'immediate')
         self.review = None
         self.review_seq = 0
@@ -538,7 +540,7 @@ class Engine:
         want = self.listening or (self.ready and self.dictating)
         if want and self.mic_stream is None:
             self.vad = webrtcvad.Vad(3)
-            self.gate = UtteranceGate(start_frames=2, silence_frames=20)  # 40 ms start, 400 ms end
+            self.gate = UtteranceGate()  # 40 ms start; 1.2 s quiet preserves natural pauses
             self.mic_stream = sd.RawInputStream(samplerate=RATE, channels=1, dtype='int16',
                                                 blocksize=FRAME, latency='low', callback=self.mic_callback)
             self.mic_stream.start()
@@ -575,12 +577,14 @@ class Engine:
                 self.notice.put(('discarded', 'noise' if ticket else 'voice off'))
                 continue
             self.notice.put(('speech-end', None))
+            self.asr_pending += 1
             threading.Thread(target=self.deliver_audio, args=(audio, ticket), daemon=True).start()
 
     def deliver_audio(self, audio, ticket):
         started = time.perf_counter()
         try:
-            text = transcribe(audio, RATE)
+            with self.asr_lock:
+                text = transcribe(audio, RATE)
             asr_ms = (time.perf_counter() - started) * 1000
             if not text or not self.routes.current(ticket):
                 self.notice.put(('discarded', 'empty' if not text else 'target changed'))
@@ -588,23 +592,35 @@ class Engine:
             self.notice.put(('transcript', (text, ticket, asr_ms, started)))
         except Exception as exc:
             self.notice.put(('send-error', type(exc).__name__ + ': ' + str(exc)[:120]))
+        finally:
+            self.notice.put(('asr-finished', None))
 
-    HOLD_SECONDS = 0.9
+    HOLD_SECONDS = 1.1
+    SENTENCE_GRACE = 0.65
 
     def accept_transcript(self, text, ticket, asr_ms, started):
-        """A sentence goes at once; a fragment waits briefly for its continuation and is merged."""
+        """ASR punctuation is not a turn boundary. Every segment gets a continuation grace."""
+        if not self.routes.current(ticket):
+            return
         if self.pending and self.pending['ticket'] == ticket:
             text = self.pending['text'] + ' ' + text
             asr_ms += self.pending['asr']
             started = self.pending['started']
-        self.pending = None
-        complete = text.rstrip().endswith(('.', '?', '!')) or len(text.split()) >= 14
-        if complete:
-            self.dispatch(text, ticket, asr_ms, started)
-        else:
-            self.pending = {'text': text, 'ticket': ticket, 'asr': asr_ms, 'started': started,
-                            'deadline': time.monotonic() + self.HOLD_SECONDS}
-            self.set_state('ready', '…')
+        capturing = getattr(getattr(self, 'gate', None), 'frames', None) is not None
+        grace = self.SENTENCE_GRACE if text.rstrip().endswith(('.', '?', '!')) else self.HOLD_SECONDS
+        self.pending = {'text': text, 'ticket': ticket, 'asr': asr_ms, 'started': started,
+                        'deadline': None if capturing else time.monotonic() + grace}
+        self.set_state('hearing' if capturing else 'ready', '' if capturing else 'Listening…')
+
+    def flush_pending(self, now):
+        capturing = getattr(getattr(self, 'gate', None), 'frames', None) is not None
+        if not self.pending or capturing or self.asr_pending:
+            return
+        if self.pending['deadline'] is None:
+            self.pending['deadline'] = now + self.HOLD_SECONDS
+        elif now >= self.pending['deadline']:
+            fragment, self.pending = self.pending, None
+            self.dispatch(fragment['text'], fragment['ticket'], fragment['asr'], fragment['started'])
 
     def dispatch(self, text, ticket, asr_ms, started, approved=False):
         threading.Thread(target=self.deliver_text, args=(text, ticket, asr_ms, started, approved), daemon=True).start()
@@ -844,6 +860,8 @@ class Engine:
                     self.set_state('transcribing')
                 elif kind == 'transcript':
                     self.accept_transcript(*value)
+                elif kind == 'asr-finished':
+                    self.asr_pending = max(0, self.asr_pending - 1)
                 elif kind == 'sending':
                     self.set_state('sending')
                 elif kind == 'discarded':
@@ -889,12 +907,7 @@ class Engine:
         except queue.Empty:
             pass
         self.dictation_tick()
-        if self.pending and self.pending['deadline'] and time.monotonic() >= self.pending['deadline']                 and self.state not in ('hearing', 'transcribing'):
-            fragment = self.pending
-            self.pending = None
-            self.dispatch(fragment['text'], fragment['ticket'], fragment['asr'], fragment['started'])
-        if self.pending and self.pending['deadline'] is None and self.state == 'ready':
-            self.pending['deadline'] = time.monotonic() + self.HOLD_SECONDS  # the continuation was dropped
+        self.flush_pending(time.monotonic())
         try:
             if self.ready and self.feed and self.voice_on():
                 for message in self.feed.poll():

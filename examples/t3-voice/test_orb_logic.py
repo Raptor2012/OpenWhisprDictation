@@ -15,7 +15,7 @@ from live_reader_core import Message
 
 def engine(**fields):
     e = t3_voice.Engine.__new__(t3_voice.Engine)
-    defaults = dict(panel_extra=False, review=None, delivery='immediate', follow_active=False, active_thread=None, dock=False, dict_state='', expanded=False, hovered=False, pin_until=0.0, pending=None, state='ready', confirmed=False,
+    defaults = dict(asr_pending=0, panel_extra=False, review=None, delivery='immediate', follow_active=False, active_thread=None, dock=False, dict_state='', expanded=False, hovered=False, pin_until=0.0, pending=None, state='ready', confirmed=False,
                     sent_at=0.0, error_at=0.0, t3_min=False, bubble=None, bubble_until=0.0, bubble_seq=0,
                     bubble_run=None, silent=deque(), meta={})
     defaults.update(fields)
@@ -24,6 +24,40 @@ def engine(**fields):
 
 
 class VisibilityTests(unittest.TestCase):
+    def test_punctuation_and_length_never_bypass_continuation_grace(self):
+        for text in ('I was thinking.', ' '.join(['word'] * 20)):
+            e = engine(routes=Mock(current=lambda t: True), dispatch=Mock())
+            e.accept_transcript(text, 'ticket', 10, 1)
+            e.dispatch.assert_not_called()
+            self.assertEqual(text, e.pending['text'])
+            self.assertGreater(e.pending['deadline'], time.monotonic() + .5)
+
+    def test_continuation_merges_and_waits_until_capture_and_asr_finish(self):
+        e = engine(routes=Mock(current=lambda t: True), dispatch=Mock(), gate=Mock(frames=None))
+        e.accept_transcript('I was thinking.', 'ticket', 10, 1)
+        e.gate.frames = [b'voice']
+        e.accept_transcript('We should try again.', 'ticket', 20, 2)
+        self.assertEqual('hearing', e.state)
+        self.assertIsNone(e.pending['deadline'])
+        e.pending['deadline'] = time.monotonic() - 1
+        e.flush_pending(time.monotonic())
+        e.dispatch.assert_not_called()
+        e.gate.frames = None
+        e.asr_pending = 1
+        e.flush_pending(time.monotonic())
+        e.dispatch.assert_not_called()
+        e.asr_pending = 0
+        e.flush_pending(time.monotonic())
+        e.dispatch.assert_called_once_with('I was thinking. We should try again.', 'ticket', 30, 1)
+        self.assertIsNone(e.pending)
+
+    def test_stale_transcript_cannot_replace_current_pending_turn(self):
+        pending = {'text': 'current', 'ticket': 'current-ticket'}
+        e = engine(routes=Mock(current=lambda t: False), dispatch=Mock(), pending=pending.copy())
+        e.accept_transcript('Old thread.', 'stale-ticket', 0, 0)
+        self.assertEqual(pending, e.pending)
+        e.dispatch.assert_not_called()
+
     def test_composer_appends_existing_draft_only_in_exact_destination(self):
         for active in ('one', 'other', 'already-pasted'):
             doc_value = Mock(Current=SimpleNamespace(Value='t3code://app/#/local/' + ('one' if active == 'already-pasted' else active)))

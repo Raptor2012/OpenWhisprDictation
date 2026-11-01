@@ -157,6 +157,17 @@ class DictationTests(unittest.TestCase):
 
 
 class UtteranceTests(unittest.TestCase):
+    def test_default_keeps_half_second_pause_inside_one_utterance(self):
+        gate = UtteranceGate()
+        events = []
+        for voiced, count, frame in [(True, 10, b'a'), (False, 25, b'z'), (True, 10, b'b'), (False, 59, b'z')]:
+            for _ in range(count):
+                events.extend(gate.push(frame, voiced))
+        self.assertNotIn('end', [kind for kind, _ in events])
+        ending = gate.push(b'z', False)
+        self.assertEqual('end', ending[0][0])
+        self.assertIn(b'a' * 10 + b'z' * 25 + b'b' * 10, ending[0][1])
+
     def test_speech_interrupts_before_silence_submits_once(self):
         gate = UtteranceGate(start_frames=3, silence_frames=4, confirm_frames=5)
         self.assertEqual([], gate.push(b'a', True))

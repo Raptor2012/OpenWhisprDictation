@@ -228,9 +228,14 @@ void main(){
   // fluid silhouette: two slow noise octaves; voice makes it breathe and flow, never form shapes
   float edgeNoise = noise(vec3(cos(ang)*0.9, sin(ang)*0.9, fl*0.38)) * 0.65
                   + noise(vec3(cos(ang)*1.8 + 3.1, sin(ang)*1.8, fl*0.55)) * 0.35;
-  float wob = 1.0 + (0.012 + 0.07*uLevel + 0.03*uBands.x) * edgeNoise;
+  float wob = 1.0 + (0.014 + 0.12*uLevel + 0.06*uBands.x) * edgeNoise;
   float r = length(d) / wob;
   vec4 col = vec4(0.0);
+
+  // voice bloom: absent at rest (keeps the deep-space look), glows outward while someone speaks
+  float bloom = exp(-max(0.0, r - 1.0) * (5.0 - 1.6*uLevel)) * smoothstep(0.98, 1.04, r);
+  float bloomAlpha = 0.32 * bloom * uLevel;
+  col += vec4(mix(uB, uC, 0.4) * bloomAlpha, bloomAlpha);
 
   // busy ring
   if (uBusy > 0.001) {
@@ -251,14 +256,17 @@ void main(){
     float f2 = fbm(sp*2.0 - warp*1.2 + vec3(-fl*0.16, fl*0.09, 3.0));
     float band = smoothstep(-0.35, 0.45, f1 + 0.30*f2);
     vec3 body = mix(uA * 0.22, uB * 0.62, band);                                   // dark nebula base
-    body += uC * smoothstep(0.30, 0.80, f2 + 0.30*uLevel) * (0.22 + 0.25*uLevel);  // faint bright filaments
+    body += mix(uB, uC, 0.5) * smoothstep(0.30, 0.80, f2 + 0.45*uLevel) * (0.2 + 0.5*uLevel);  // filaments flare with voice, coloured not white
     float core = smoothstep(0.0, 0.9, r);                                          // the centre falls into shadow
-    body *= mix(0.28 + 0.25*uLevel, 1.0, core);
+    body *= mix(0.25 + 0.75*uLevel, 1.0, core);                                    // the core lights up as you speak
     vec3 L = normalize(vec3(-0.55, 0.75, 0.6));
     float fres = pow(1.0 - max(0.0, n.z), 2.2);
     vec3 H = normalize(L + vec3(0.0, 0.0, 1.0));
     float spec = pow(max(0.0, dot(n, H)), 220.0) * 0.28;
-    vec3 c = body + mix(uB, uC, 0.4) * fres * (0.75 + 0.35*uLevel) + mix(vec3(1.0), uC, 0.6) * spec;
+    float h = 0.5 + 0.5*n.y;                                                       // 0 = bottom, 1 = top
+    vec4 zone = vec4(1.0 - smoothstep(0.0, 0.4, h), exp(-pow((h-0.38)/0.2, 2.0)), exp(-pow((h-0.66)/0.2, 2.0)), smoothstep(0.65, 1.0, h));
+    float rimBand = dot(zone, uBands);                                             // spectrum mapped around the rim
+    vec3 c = body + mix(uB, uC, 0.4) * fres * (0.65 + 0.45*uLevel + 1.1*rimBand) + mix(vec3(1.0), uC, 0.6) * spec;
     float desat = dot(c, vec3(0.299,0.587,0.114));
     c = mix(c, vec3(desat)*0.9, uOff*0.75);
     float edge = 1.0 - smoothstep(0.985, 1.0, r);
@@ -372,12 +380,12 @@ function frame(now){
   sAppear.t = (S.visible || hovering || expanded || barMode) ? 1 : 0;
   if (state !== lastState) { sScale.v += (state==='hearing'||state==='speaking'||state==='dictating') ? 0.8 : state==='done' ? 1.3 : (state==='error'||state==='failed') ? -0.7 : 0.45; lastState = state; }
   const breathe = 1 + 0.018*Math.sin(now/1700) + 0.006*Math.sin(now/730);
-  sScale.t = breathe * (1 + 0.2*sLevel.x);
+  sScale.t = breathe * (1 + 0.3*sLevel.x);
   const talking = ['hearing','dictating'].includes(state) || playbackActive();
   const groups = talking ? bandGroups(liveBands) : [0,0,0,0];
   for (let k = 0; k < 4; k++) { const g = Math.min(1, groups[k]*1.6); quad[k] += (g - quad[k]) * (1 - Math.exp(-dt * (g > quad[k] ? 9 : 3.5))); }
   const busyNow = state==='transcribing'||state==='sending'||state==='processing';
-  flow += dt * (0.5 + 1.25*sLevel.x + (busyNow ? 0.3 : 0));
+  flow += dt * (0.5 + 2.0*sLevel.x + (busyNow ? 0.3 : 0));
   sPart.t = talking ? 0.55 + 0.45*Math.min(1, sLevel.x*1.5) : busyNow ? 0.4 : (S.visible ? 0.18 : 0);
   const lvl = sLevel.step(dt), scale = sScale.step(dt), glow = sGlow.step(dt), b = sBusy.step(dt), off = sOff.step(dt);
   const appear = sAppear.step(dt);

@@ -172,11 +172,9 @@ def tone(steps, ms=70, volume=0.12):
 
 
 def surface_hit_rects(regions, surface, scale):
-    """Native shape follows visible UI only; the rest of the fixed surface is click-through.
-
-    The shape is one bounding rectangle. A union of rectangles (a wide bubble over the narrower
-    orb) has concave inner edges, and on this DWM-extended WebView2 window those edges left
-    1 px grey columns beside the orb that stayed until the next region change."""
+    """Where the fixed surface takes the mouse: visible UI plus its shadow. Everything else is
+    click-through. These rectangles are logic only; they are never applied as a window region,
+    whose edges left 1 px grey lines on this DWM-extended transparent window."""
     rects=[]
     for item in regions[:16] if isinstance(regions,list) else []:
         if not isinstance(item,dict) or item.get('id') not in ('orbwrap','bar','card','bubble','review'):
@@ -192,9 +190,7 @@ def surface_hit_rects(regions, surface, scale):
                 rects.append((math.floor(left*scale),math.floor(top*scale),math.ceil(right*scale),math.ceil(bottom*scale)))
         except (ValueError,TypeError,KeyError):
             continue
-    if not rects:
-        return ()
-    return ((min(r[0] for r in rects),min(r[1] for r in rects),max(r[2] for r in rects),max(r[3] for r in rects)),)
+    return tuple(sorted(set(rects)))
 
 
 class Engine:
@@ -249,6 +245,7 @@ class Engine:
         self.viewport_target = SURFACE
         self.native_placement = None
         self.hit_rects = None
+        self.click_through = None
         self.orb_anchor = None
         self.drag_gesture = 0
         self.drag_origin = None
@@ -1050,6 +1047,7 @@ class Engine:
                 with self.lock:
                     self.tick()
                     self.update_ducking()
+                    self.update_click_through()
             except Exception as exc:
                 self.meta['loopError'] = type(exc).__name__
             time.sleep(.04)
@@ -1510,22 +1508,26 @@ class Engine:
                 width,height=self.viewport_target
                 rects=surface_hit_rects([{'id':'bar' if self.dock else 'orbwrap','x':(width-(200 if self.dock else 180))/2,
                     'y':height-(48 if self.dock else 150),'width':200 if self.dock else 180,'height':48 if self.dock else 150}],self.viewport_target,self.scale())
-            if rects==self.hit_rects:
-                return
-            combined=gdi32.CreateRectRgn(0,0,0,0)
-            if not combined:return
-            try:
-                for left,top,right,bottom in rects:
-                    part=gdi32.CreateRectRgn(left,top,right,bottom)
-                    if not part:return
-                    try:
-                        if not gdi32.CombineRgn(combined,combined,part,2):return
-                    finally:gdi32.DeleteObject(part)
-                if user32.SetWindowRgn(self.hwnd,combined,True):
-                    combined=None  # Windows owns the region after success.
-                    self.hit_rects=rects
-            finally:
-                if combined:gdi32.DeleteObject(combined)
+            self.hit_rects=rects
+            self.update_click_through()
+
+    def update_click_through(self):
+        """Layered window + WS_EX_TRANSPARENT: clicks pass through unless the cursor is over visible UI.
+        Toggling an extended style repaints nothing, so unlike a window region it can leave no edges."""
+        if not self.hwnd or self.hit_rects is None:
+            return
+        point, rect = wintypes.POINT(), wintypes.RECT()
+        if not (user32.GetCursorPos(ctypes.byref(point)) and user32.GetWindowRect(self.hwnd, ctypes.byref(rect))):
+            return
+        x, y = point.x - rect.left, point.y - rect.top
+        inside = any(left <= x < right and top <= y < bottom for left, top, right, bottom in self.hit_rects)
+        held = any(user32.GetAsyncKeyState(key) & 0x8000 for key in (0x01, 0x02))
+        through = not inside and not (held and self.click_through is False)   # never drop a press or drag
+        if through == self.click_through:
+            return
+        style = user32.GetWindowLongW(self.hwnd, -20)
+        user32.SetWindowLongW(self.hwnd, -20, (style | 0x20) if through else (style & ~0x20))
+        self.click_through = through
 
     def drag_window(self, gesture, dx, dy):
         """Only deliberate page drags reach here; deltas always refer to one fixed origin."""
@@ -1715,6 +1717,11 @@ def make_transparent(window, engine):
         hwnd = form.Handle.ToInt32()
         none = ctypes.c_int(1)  # DWMSBT_NONE
         ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, 38, ctypes.byref(none), 4)
+        no_border = ctypes.c_uint(0xFFFFFFFE)  # DWMWA_COLOR_NONE: no Windows 11 1 px frame border
+        ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, 34, ctypes.byref(no_border), 4)
+        # Layered (fully opaque alpha) so WS_EX_TRANSPARENT can make empty space click-through.
+        user32.SetWindowLongW(hwnd, -20, user32.GetWindowLongW(hwnd, -20) | 0x00080000)
+        user32.SetLayeredWindowAttributes(hwnd, 0, 255, 2)
         margins = MARGINS(-1, -1, -1, -1)
         ctypes.windll.dwmapi.DwmExtendFrameIntoClientArea(hwnd, ctypes.byref(margins))
         engine.attach(hwnd)

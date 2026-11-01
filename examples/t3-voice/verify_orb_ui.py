@@ -561,7 +561,7 @@ def run():
                 report['failures'].append({'appearance':appearance})
         resize(340,480)
         window.evaluate_js("S.state='ready';S.agent={activity:'idle'};S.speaking=false;S.voiceOn=true;S.visible=true;S.bubble=null;S.review=null;S.expanded=false;S.dock=false;S.reducedMotion=false;applyExpanded(false);render();")
-        time.sleep(1)
+        time.sleep(2.5)  # let the palette springs finish the thinking->ready colour change first
         window.evaluate_js("""window.qaReadIdle=()=>{
           const r=gl.getUniform(prog,U.uR),c=gl.getUniform(prog,U.uCenter),size=Math.floor(r*1.2),pixels=new Uint8Array(size*size*4);
           gl.drawArrays(gl.TRIANGLE_STRIP,0,4);gl.readPixels(Math.floor(c[0]-size/2),Math.floor(c[1]-size/2),size,size,gl.RGBA,gl.UNSIGNED_BYTE,pixels);
@@ -626,7 +626,7 @@ def run():
         # Exercise the real native placement code on this isolated QA window, without input.
         from t3_voice import Engine,MONITORINFO,CARD,COMPACT
         native=Engine.__new__(Engine)
-        native.hwnd=window.native.Handle.ToInt32();native.size=None;native.orb_anchor=None;native.native_placement=None;native.hit_rects=None;native.meta={};native.lock=threading.RLock();native.dock=False
+        native.hwnd=window.native.Handle.ToInt32();native.size=None;native.orb_anchor=None;native.native_placement=None;native.hit_rects=None;native.click_through=None;native.meta={};native.lock=threading.RLock();native.dock=False
         area=MONITORINFO();area.size=ctypes.sizeof(area)
         user32.MonitorFromWindow.argtypes=[ctypes.wintypes.HWND,ctypes.c_uint]
         user32.MonitorFromWindow.restype=ctypes.wintypes.HMONITOR
@@ -652,13 +652,16 @@ def run():
         probe=gdi32.CreateRectRgn(0,0,0,0)
         try:
             user32.GetWindowRgn.argtypes=[ctypes.wintypes.HWND,ctypes.wintypes.HANDLE]
-            gdi32.PtInRegion.argtypes=[ctypes.wintypes.HANDLE,ctypes.c_int,ctypes.c_int]
             regionType=user32.GetWindowRgn(native.hwnd,probe)
-            shape={'valid':regionType>0,'emptySpaceExcluded':not bool(gdi32.PtInRegion(probe,5,5)),
-                   'orbIncluded':bool(gdi32.PtInRegion(probe,round(w*scale/2),round((h-66)*scale)))}
-            report['nativeSurfaceShape']=shape
-            if not all(shape.values()):report['failures'].append({'nativeSurfaceShape':shape})
         finally:gdi32.DeleteObject(probe)
+        # No window region at all (its edges drew grey lines); click-through is an extended style instead.
+        native.hit_rects=((0,0,0,0),);native.click_through=None;native.update_click_through()
+        emptyPasses=bool(user32.GetWindowLongW(native.hwnd,-20)&0x20)
+        native.hit_rects=((-10**6,-10**6,10**6,10**6),);native.update_click_through()
+        uiTakes=not user32.GetWindowLongW(native.hwnd,-20)&0x20
+        shape={'noWindowRegion':regionType==0,'emptySpaceClickThrough':emptyPasses,'visibleUiClickable':uiTakes}
+        report['nativeSurfaceShape']=shape
+        if not all(shape.values()):report['failures'].append({'nativeSurfaceShape':shape})
     except Exception as exc:
         report['failures'].append({'error':repr(exc)})
     finally:

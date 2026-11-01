@@ -903,29 +903,54 @@ class FixedOrbSurfaceTests(unittest.TestCase):
         rects=t3_voice.surface_hit_rects([{'id':'card','x':12,'y':130,'width':316,'height':200},{'id':'unknown','x':0,'y':0,'width':340,'height':480}],(340,480),1)
         self.assertEqual(((0,90,340,370),),rects)
 
-    def test_bubble_and_orb_share_one_rectangle_without_inner_region_edges(self):
-        # An L-shaped union (wide bubble over the narrower orb) left 1 px grey columns on the
-        # orb's sides below the bubble; one bounding rectangle has no concave edges.
+    def test_bubble_and_orb_stay_separate_so_strips_beside_the_orb_are_click_through(self):
         rects=t3_voice.surface_hit_rects([{'id':'orbwrap','x':80,'y':330,'width':180,'height':150},
                                           {'id':'bubble','x':20,'y':200,'width':300,'height':168}],(340,480),1)
-        self.assertEqual(((0,160,340,480),),rects)
+        self.assertEqual(((0,160,340,408),(80,330,260,480)),rects)
 
 
-class SurfaceRegionOwnershipTests(unittest.TestCase):
-    def test_regions_are_cached_and_windows_owns_only_the_combined_handle(self):
-        e=engine(hwnd=100,lock=threading.RLock(),viewport_target=(340,480),scale=lambda:1)
-        regions=[{'id':'orbwrap','x':80,'y':330,'width':180,'height':150}]
-        with patch.object(t3_voice.gdi32,'CreateRectRgn',side_effect=[101,102]) as create,patch.object(t3_voice.gdi32,'CombineRgn',return_value=1),patch.object(t3_voice.gdi32,'DeleteObject') as delete,patch.object(t3_voice.user32,'SetWindowRgn',return_value=1) as apply:
-            e.set_hit_regions(regions);e.set_hit_regions(regions)
-        self.assertEqual(2,create.call_count);apply.assert_called_once_with(100,101,True)
-        delete.assert_called_once_with(102)
+class ClickThroughTests(unittest.TestCase):
+    """No window region (its edges left 1 px grey lines on the transparent window); a layered
+    window toggles WS_EX_TRANSPARENT instead, depending on whether the cursor is over visible UI."""
+
+    def setUp(self):
+        self.style={'ex':0x08050008}
+        self.cursor=(0,0); self.buttons=0
+        def cursor(point):point._obj.x,point._obj.y=self.cursor;return 1
+        def rect(hwnd,r):r._obj.left,r._obj.top,r._obj.right,r._obj.bottom=1000,300,1340,780;return 1
+        self.sets=[]
+        def set_long(hwnd,index,value):self.sets.append(value);self.style['ex']=value;return 1
+        self.patches=[patch.object(t3_voice.user32,'GetCursorPos',side_effect=cursor),
+                      patch.object(t3_voice.user32,'GetWindowRect',side_effect=rect),
+                      patch.object(t3_voice.user32,'GetWindowLongW',side_effect=lambda h,i:self.style['ex']),
+                      patch.object(t3_voice.user32,'SetWindowLongW',side_effect=set_long),
+                      patch.object(t3_voice.user32,'GetAsyncKeyState',side_effect=lambda key:0x8000 if self.buttons else 0)]
+        for item in self.patches:item.start()
+
+    def tearDown(self):
+        for item in self.patches:item.stop()
+
+    def test_hit_regions_never_set_a_window_region(self):
+        e=engine(hwnd=100,lock=threading.RLock(),viewport_target=(340,480),scale=lambda:1,click_through=None)
+        with patch.object(t3_voice.user32,'SetWindowRgn') as region:
+            e.set_hit_regions([{'id':'orbwrap','x':80,'y':330,'width':180,'height':150}])
+        region.assert_not_called()
         self.assertEqual(((80,330,260,480),),e.hit_rects)
 
-    def test_allocation_failure_does_not_remove_existing_click_through_shape(self):
-        e=engine(hwnd=100,lock=threading.RLock(),viewport_target=(340,480),scale=lambda:1)
-        with patch.object(t3_voice.gdi32,'CreateRectRgn',return_value=0),patch.object(t3_voice.user32,'SetWindowRgn') as apply:
-            e.set_hit_regions([{'id':'orbwrap','x':80,'y':330,'width':180,'height':150}])
-        apply.assert_not_called()
+    def test_empty_space_passes_clicks_through_and_visible_ui_takes_them(self):
+        e=engine(hwnd=100,lock=threading.RLock(),hit_rects=((80,330,260,480),),click_through=None)
+        self.cursor=(1010,310); e.update_click_through(); e.update_click_through()
+        self.assertEqual([0x08050008|0x20],self.sets,'transparent space must be click-through, set once')
+        self.cursor=(1170,700); e.update_click_through()
+        self.assertEqual(0x08050008,self.style['ex'])
+
+    def test_a_held_button_keeps_a_drag_or_press_on_the_orb(self):
+        e=engine(hwnd=100,lock=threading.RLock(),hit_rects=((80,330,260,480),),click_through=None)
+        self.cursor=(1170,700); e.update_click_through()
+        self.buttons=1; self.cursor=(1010,310); e.update_click_through()
+        self.assertFalse(e.click_through)
+        self.buttons=0; e.update_click_through()
+        self.assertTrue(e.click_through)
 
 
 class BackgroundAudioDuckingTests(unittest.TestCase):

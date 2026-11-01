@@ -85,6 +85,7 @@ class Engine:
         self.detail = ''
         self.mic_level = 0.0
         self.out_level = 0.0
+        self.pending = None  # unfinished fragment waiting for its continuation
         self.mode = self.prefs.get('mode', 'handsfree')
         self.cleanup = bool(self.prefs.get('cleanup', False))
         self.window = None
@@ -165,6 +166,7 @@ class Engine:
         self.prefs.set('cleanup', self.cleanup)
 
     def after_route_change(self):
+        self.pending = None
         self.detail = ''
         if self.ready:
             self.set_state(self.idle_state())
@@ -241,16 +243,39 @@ class Engine:
             if not text or not self.routes.current(ticket):
                 self.notice.put(('discarded', 'empty' if not text else 'target changed'))
                 return
-            if self.cleanup:
-                text = cleanup_text(text)
-            self.deliver_text(text, ticket, asr_ms, started)
+            self.notice.put(('transcript', (text, ticket, asr_ms, started)))
         except Exception as exc:
             self.notice.put(('send-error', type(exc).__name__ + ': ' + str(exc)[:120]))
 
+    HOLD_SECONDS = 0.9
+
+    def accept_transcript(self, text, ticket, asr_ms, started):
+        """A sentence goes at once; a fragment waits briefly for its continuation and is merged."""
+        if self.pending and self.pending['ticket'] == ticket:
+            text = self.pending['text'] + ' ' + text
+            asr_ms += self.pending['asr']
+            started = self.pending['started']
+        self.pending = None
+        complete = text.rstrip().endswith(('.', '?', '!')) or len(text.split()) >= 14
+        if complete:
+            self.dispatch(text, ticket, asr_ms, started)
+        else:
+            self.pending = {'text': text, 'ticket': ticket, 'asr': asr_ms, 'started': started,
+                            'deadline': time.monotonic() + self.HOLD_SECONDS}
+            self.set_state('ready', '…')
+
+    def dispatch(self, text, ticket, asr_ms, started):
+        threading.Thread(target=self.deliver_text, args=(text, ticket, asr_ms, started), daemon=True).start()
+
     def deliver_text(self, text, ticket, asr_ms, started):
-        self.notice.put(('sending', None))
-        send_message(ticket.thread, text)
-        self.notice.put(('sent', (len(text.split()), asr_ms, (time.perf_counter() - started) * 1000)))
+        try:
+            if self.cleanup:
+                text = cleanup_text(text)
+            self.notice.put(('sending', None))
+            send_message(ticket.thread, text)
+            self.notice.put(('sent', (len(text.split()), asr_ms, (time.perf_counter() - started) * 1000)))
+        except Exception as exc:
+            self.notice.put(('send-error', type(exc).__name__ + ': ' + str(exc)[:120]))
 
     def forward_openwhispr(self):
         try:
@@ -266,11 +291,7 @@ class Engine:
             threading.Thread(target=self._forward, args=(text, ticket), daemon=True).start()
 
     def _forward(self, text, ticket):
-        started = time.perf_counter()
-        try:
-            self.deliver_text(text, ticket, 0.0, started)
-        except Exception as exc:
-            self.notice.put(('send-error', type(exc).__name__ + ': ' + str(exc)[:120]))
+        self.deliver_text(text, ticket, 0.0, time.perf_counter())
 
     # ----- speech out -----
     def hotkey(self):
@@ -388,9 +409,13 @@ class Engine:
                 elif kind == 'speech-start':
                     if self.current or not self.jobs.empty():
                         self.stop()  # barge-in
+                    if self.pending:
+                        self.pending['deadline'] = None  # continuation is coming; keep holding
                     self.set_state('hearing')
                 elif kind == 'speech-end':
                     self.set_state('transcribing')
+                elif kind == 'transcript':
+                    self.accept_transcript(*value)
                 elif kind == 'sending':
                     self.set_state('sending')
                 elif kind == 'discarded':
@@ -425,6 +450,12 @@ class Engine:
                     self.meta['error'] = value
         except queue.Empty:
             pass
+        if self.pending and self.pending['deadline'] and time.monotonic() >= self.pending['deadline']                 and self.state not in ('hearing', 'transcribing'):
+            fragment = self.pending
+            self.pending = None
+            self.dispatch(fragment['text'], fragment['ticket'], fragment['asr'], fragment['started'])
+        if self.pending and self.pending['deadline'] is None and self.state == 'ready':
+            self.pending['deadline'] = time.monotonic() + self.HOLD_SECONDS  # the continuation was dropped
         try:
             if self.ready and self.feed and self.voice_on():
                 for message in self.feed.poll():

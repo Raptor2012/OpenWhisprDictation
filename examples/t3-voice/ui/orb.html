@@ -45,9 +45,7 @@
                    border-right:1px solid var(--line); border-bottom:1px solid var(--line); transform:rotate(45deg); border-radius:0 0 3px 0; }
   #who { font-size:10px; letter-spacing:.6px; text-transform:uppercase; color:#c4a8ff; margin-bottom:3px; }
   #bubble.you #who { color:#ffcf8a; }
-  #btext { font-size:13px; line-height:1.45; max-height:113px; overflow:hidden; white-space:pre-wrap; overflow-wrap:anywhere;
-           -webkit-mask-image:linear-gradient(to bottom, transparent 0, #000 14px); mask-image:linear-gradient(to bottom, transparent 0, #000 14px); }
-  #btext.short { -webkit-mask-image:none; mask-image:none; }
+  #btext { font-size:13px; line-height:1.45; max-height:113px; overflow:hidden; white-space:pre-wrap; overflow-wrap:anywhere; }
   #bubble.you #btext { color:#d9dce3; }
   #btext .word { display:inline-block; max-width:100%; }
   #btext .fresh { animation:ink .42s var(--soft) both; animation-delay:var(--ink-delay,0ms); }
@@ -329,7 +327,7 @@ const sScale = new Spring(1, 120, 18);
 const sAppear = new Spring(0, 190, 15);   // pop-in with a little overshoot
 const sGlow = new Spring(.25, 50, 10), sBusy = new Spring(0, 80, 12), sOff = new Spring(1, 40, 10);
 let spin = 0, lastT = performance.now(), lastState = '', expanded = false, hovering = false;
-function micResponse(rms){ return Math.min(1, Math.sqrt(Math.max(0, rms-.0015)/.075)); }
+function audioResponse(rms){const signal=Math.max(0,rms-.0001);return Math.sqrt(signal/(signal+.015));}
 function playbackActive(){return !!S.speaking || S.state==='speaking';}
 function visualState(){return ['hearing','dictating'].includes(S.state)?S.state:playbackActive()?'speaking':S.state;}
 
@@ -337,7 +335,7 @@ function frame(now){
   const dt = Math.min(0.05, (now - lastT)/1000); lastT = now;
   const state = visualState(), p = PAL[state] || PAL.off;
   sA.t = p.a; sB.t = p.b; sC.t = p.c; sGlow.t = p.glow;
-  const audio = (state==='hearing'||state==='dictating') ? micResponse(S.mic) : playbackActive() ? micResponse(S.out) :
+  const audio = (state==='hearing'||state==='dictating') ? audioResponse(S.mic) : playbackActive() ? audioResponse(S.out) :
                 state==='reading' ? 0.18 + 0.12*Math.sin(now/260) : 0;
   sLevel.t = audio;
   sLevel.k = audio > sLevel.x ? 400 : 110; sLevel.d = audio > sLevel.x ? 36 : 22;
@@ -346,7 +344,7 @@ function frame(now){
   sAppear.t = (S.visible || hovering || expanded || barMode) ? 1 : 0;
   if (state !== lastState) { sScale.v += (state==='hearing'||state==='speaking'||state==='dictating') ? 1.6 : state==='done' ? 2.2 : (state==='error'||state==='failed') ? -1.2 : 0.9; lastState = state; }
   const breathe = 1 + 0.025*Math.sin(now/1100);
-  sScale.t = breathe * (1 + 0.10*sLevel.x);
+  sScale.t = breathe * (1 + 0.18*sLevel.x);
   const lvl = sLevel.step(dt), scale = sScale.step(dt), glow = sGlow.step(dt), b = sBusy.step(dt), off = sOff.step(dt);
   const appear = sAppear.step(dt);
   const A = sA.step(dt), B = sB.step(dt), C = sC.step(dt);
@@ -364,29 +362,27 @@ function frame(now){
   gl.uniform3fv(U.uA, A); gl.uniform3fv(U.uB, B); gl.uniform3fv(U.uC, C);
   gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
   tickBubble(dt);
-  drawWave(dt, lvl, C);
+  drawWave(dt, C);
   requestAnimationFrame(frame);
 }
 requestAnimationFrame(frame);
 
-// ---------- toolbar waveform: bars spring toward a rolling level history ----------
+// ---------- actual speech spectrum, shared by orb and toolbar ----------
 const wave = document.getElementById('wave'), wctx = wave.getContext('2d');
 wave.width = 52*dpr; wave.height = 24*dpr;
 const orbWave = document.getElementById('orbWave'), octx = orbWave.getContext('2d');
 orbWave.width = 72*dpr; orbWave.height = 14*dpr;
-const BARS = 11, hist = new Array(BARS).fill(0), bars = Array.from({length:BARS}, ()=> new Spring(0, 320, 18));
-let waveAcc = 0;
-function drawWave(dt, lvl, C){
-  waveAcc += dt;
-  if (waveAcc > 0.06) { waveAcc = 0; hist.shift(); hist.push(Math.max(0, lvl) * (0.6 + 0.4*Math.random())); }
+const BARS = 11, bars = Array.from({length:BARS}, ()=> new Spring(0, 320, 18));
+function drawWave(dt, C){
   const state=visualState(),busy = state==='processing'||state==='transcribing'||state==='sending';
+  const spectrum=['hearing','dictating'].includes(state)?S.micBands:playbackActive()?S.outBands:null;
   const canvas = barMode ? wave : orbWave, ctx = barMode ? wctx : octx;
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   const col = `rgb(${C.map(v=>Math.round(Math.min(1,v)*255)).join(',')})`;
   ctx.fillStyle = col;
   const gap = canvas.width / BARS, bw = Math.max(2*dpr, gap*0.42), mid = canvas.height/2, t = performance.now()/1000;
   for (let i = 0; i < BARS; i++) {
-    let target = hist[i];
+    let target = Math.max(0,Math.min(1,spectrum?.[i]||0));
     if (busy) target = 0.22 + 0.18*Math.sin(t*7 - i*0.7);       // travelling shimmer while working
     bars[i].t = target; const v = Math.max(0, bars[i].step(dt));
     const h = Math.max(2.4*dpr, Math.min(canvas.height, (0.12 + v*1.4) * canvas.height));
@@ -430,7 +426,6 @@ function paintBubble(tokens){
   }
   bubbleNodes.splice(prefix,0,...added);
   bubbleNodes.forEach((item,i)=>{const gap=i<tokens.length-1?tokens[i].gap:'';if(item.gap.textContent!==gap)item.gap.textContent=gap;});
-  btext.classList.toggle('short', btext.scrollHeight <= btext.clientHeight + 2);
   btext.scrollTop = btext.scrollHeight;
 }
 function tickBubble(dt){

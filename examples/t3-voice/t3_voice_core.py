@@ -2,6 +2,7 @@
 from collections import deque
 from contextlib import closing
 from dataclasses import dataclass
+from functools import lru_cache
 import json
 import os
 from pathlib import Path
@@ -12,6 +13,36 @@ import threading
 from urllib.parse import urlsplit, unquote
 
 from live_reader_core import MessageFeed, Message, clean_prose
+
+
+@lru_cache(maxsize=8)
+def _spectrum_plan(count, sample_rate):
+    import numpy as np
+    window=np.hanning(count)
+    frequencies=np.fft.rfftfreq(count,1/sample_rate)
+    edges=np.geomspace(100,min(6000,sample_rate/2),12)
+    bins=[]
+    for low,high in zip(edges,edges[1:]):
+        indices=np.flatnonzero((frequencies>=low)&(frequencies<high))
+        bins.append(indices if len(indices) else np.array([np.argmin(abs(frequencies-(low+high)/2))]))
+    return window,bins
+
+
+def audio_feedback(pcm, sample_rate):
+    """RMS plus eleven actual speech-frequency bands from one PCM16 audio frame."""
+    import numpy as np
+    samples=np.frombuffer(pcm,dtype='<i2').astype('f4')/32768
+    if len(samples)<4:
+        return 0.0,[0.0]*11
+    level=float(np.sqrt(np.mean(samples*samples)))
+    if level<1e-6:
+        return level,[0.0]*11
+    window,bins=_spectrum_plan(len(samples),sample_rate)
+    amplitudes=np.abs(np.fft.rfft(samples*window))*2/window.sum()
+    # A fixed dB range preserves differences between bands and handles quiet PCM.
+    bands=[float(np.clip((20*np.log10(max(float(amplitudes[index].max()),1e-8))+72)/42,0,1))
+           for index in bins]
+    return level,bands
 
 
 class DictationPreview:

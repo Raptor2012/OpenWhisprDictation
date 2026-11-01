@@ -58,6 +58,32 @@ class DictationPreviewTests(unittest.TestCase):
         self.assertIsNotNone(preview.request(2))
 
 
+class AudioFeedbackTests(unittest.TestCase):
+    def tone(self, frequency, amplitude=.002, rate=16000):
+        import numpy as np
+        samples=np.sin(2*np.pi*frequency*np.arange(rate//50)/rate)*amplitude
+        return (samples*32767).astype('<i2').tobytes()
+
+    def test_frequency_bands_follow_frequency_rather_than_one_loudness_value(self):
+        from t3_voice_core import audio_feedback
+        import numpy as np
+        low_rms,low=audio_feedback(self.tone(400),16000)
+        high_rms,high=audio_feedback(self.tone(1600),16000)
+        self.assertAlmostEqual(low_rms,high_rms,places=5)
+        self.assertNotEqual(int(np.argmax(low)),int(np.argmax(high)))
+        self.assertGreater(max(low)-min(low),.2)
+        self.assertGreater(max(high)-min(high),.2)
+
+    def test_silence_is_zero_and_quiet_speech_has_visible_finite_bands(self):
+        from t3_voice_core import audio_feedback
+        level,bands=audio_feedback(bytes(640),16000)
+        self.assertEqual(0,level)
+        self.assertEqual([0.0]*11,bands)
+        level,bands=audio_feedback(self.tone(800,amplitude=.0007),16000)
+        self.assertGreater(max(bands),.1)
+        self.assertTrue(all(0<=value<=1 for value in bands))
+
+
 class ActiveThreadTests(unittest.TestCase):
     def test_exact_local_route_and_once_encoded_thread_id(self):
         self.assertEqual('abc', parse_thread_url('t3code://app/#/local/abc', 'local'))

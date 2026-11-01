@@ -19,7 +19,7 @@ def engine(**fields):
                     sent_at=0.0, error_at=0.0, t3_min=False, bubble=None, bubble_until=0.0, bubble_seq=0,
                     bubble_run=None, silent=deque(), meta={}, dict_preview_text='', dict_preview_until=0,
                     dict_preview_session=0, dict_preview=None, dictating=False, mic_level=0, current=None,
-                    bubble_layout_until=0)
+                    bubble_layout_until=0,mic_bands=[0.0]*11,mic_peak=0)
     defaults.update(fields)
     e.__dict__.update(defaults)
     return e
@@ -449,6 +449,23 @@ class BubbleTests(unittest.TestCase):
 
 
 class PlaybackMeterTests(unittest.TestCase):
+    def test_microphone_and_playback_publish_different_frequency_bands(self):
+        import numpy as np
+        for rate in (16000,24000):
+            peaks=[]
+            for frequency in (400,1600):
+                pcm=(np.sin(2*np.pi*frequency*np.arange(rate//50)/rate)*.003*32767).astype('<i2').tobytes()
+                if rate==16000:
+                    e=engine();e.mic_callback(pcm,320,None,None);bands=e.mic_bands
+                else:
+                    with patch('live_reader.sd.RawOutputStream'):
+                        audio=t3_voice.ContinuousAudio()
+                    audio.put(pcm,audio.epoch,__import__('threading').Event())
+                    audio.callback(bytearray(960),480,None,SimpleNamespace(output_underflow=False));bands=audio.spectrum
+                self.assertGreater(max(bands)-min(bands),.2)
+                peaks.append(int(np.argmax(bands)))
+            self.assertNotEqual(peaks[0],peaks[1])
+
     def test_meter_tracks_played_samples_instead_of_queued_generation(self):
         with patch('live_reader.sd.RawOutputStream'):
             audio=t3_voice.ContinuousAudio()

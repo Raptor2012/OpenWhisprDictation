@@ -31,7 +31,7 @@ from diagnostics import write_status
 from live_reader import ContinuousAudio
 from live_reader_core import Message
 from t3_voice_core import (DictationPreview, DictationWatch, OpenWhisprFeed, Routes, StreamingFeed, UtteranceGate, cleanup_text,
-                           list_threads, parse_hotkey, parse_thread_url, read_env, send_message, transcribe)
+                           audio_feedback, list_threads, parse_hotkey, parse_thread_url, read_env, send_message, transcribe)
 
 ROOT = Path(__file__).resolve().parent
 DB = Path.home() / '.t3/userdata/statev2.sqlite'
@@ -191,6 +191,8 @@ class Engine:
         self.text = ''
         self.detail = ''
         self.mic_level = 0.0
+        self.mic_bands = [0.0]*11
+        self.mic_peak = 0.0
         self.out_level = 0.0
         self.pending = None  # unfinished fragment waiting for its continuation
         self.mode = 'openwhispr'  # hold/release defines turns; never listen continuously
@@ -440,6 +442,7 @@ class Engine:
         if self.dict_state:
             state, text = self.dict_state, (self.dict_error if self.dict_state == 'failed' else '')
         return {'state': state, 'text': text, 'mic': self.mic_level, 'out': self.audio.level if self.audio else 0.0,
+                'micBands': self.mic_bands, 'outBands': self.audio.spectrum if self.audio else [0.0]*11,
                 'speaking': self.current is not None and not self.maeve_muted,
                 'voiceOn': self.voice_on(), 'mode': self.mode, 'thread': self.thread or '', 'threadTitle': title,
                 'threads': [{'id': t['id'], 'title': (t['title'] or '')[:60]} for t in self.threads[:40]],
@@ -596,14 +599,16 @@ class Engine:
             self.mic_stream.close()
             self.mic_stream = None
             self.mic_level = 0.0
+            self.mic_bands = [0.0]*11
 
     def mic_callback(self, data, frames, timing, status):
         frame = bytes(data)
         if len(frame) != FRAME * 2:
             return
-        samples = np.frombuffer(frame, dtype='<i2').astype('f4') / 32768
-        level = float(np.sqrt(np.mean(samples * samples)))
+        level,bands = audio_feedback(frame,RATE)
         self.mic_level = max(level, self.mic_level * .86)  # retain short peaks between 50 ms UI polls
+        self.mic_bands = [max(value,previous*.74) for value,previous in zip(bands,self.mic_bands)]
+        self.mic_peak = max(self.mic_peak,level)
         # Display-only preview; OpenWhispr still supplies the only deliverable transcript.
         if self.dict_preview:
             self.dict_preview.push(frame, voiced=level > .004)
@@ -879,6 +884,7 @@ class Engine:
                         self.stop()  # Maeve must not talk into the dictation
                     self.pending = None
                     self.dictating = True
+                    self.mic_peak = 0.0
                     self.dict_state = 'dictating'
                     self.dict_preview_text = ''
                     self.dict_preview_until = 0.0
@@ -989,6 +995,7 @@ class Engine:
         self.meta['updatedAt'] = time.time()
         self.meta['mode'] = self.mode
         self.meta['inputMonitorActive'] = self.mic_stream is not None
+        self.meta['lastMicPeak'] = self.mic_peak
         self.follow_tick()
         self.meta.update(followActive=self.follow_active,
                          activeThreadId=self.active_thread['id'] if self.active_thread else None)

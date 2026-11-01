@@ -53,6 +53,14 @@ def run():
         saved['stream'].Dispose()
 
     try:
+        import numpy as np
+        from t3_voice_core import audio_feedback
+        feedback=[]
+        for frequency,rate in ((400,16000),(1600,24000)):
+            pcm=(np.sin(2*np.pi*frequency*np.arange(rate//50)/rate)*.003*32767).astype('<i2').tobytes()
+            level,bands=audio_feedback(pcm,rate)
+            feedback.append({'level':level,'bands':bands,'dominant':int(np.argmax(bands))})
+        window.evaluate_js('window.qaMicFeedback=%s;window.qaOutputFeedback=%s;' % tuple(json.dumps(item) for item in feedback))
         window.evaluate_js('''window.qaErrors=[];window.addEventListener('error',e=>qaErrors.push(e.message));
           window.qaCalls=[];api=(name,...args)=>{qaCalls.push({name,args});
             if(name==='set_expanded')S.expanded=args[0];
@@ -60,7 +68,7 @@ def run():
           document.body.style.background='#202329';''')
         states = ['loading','ready','hearing','transcribing','sending','waiting','speaking','reading','off','error','dictating','processing','done','failed']
         cases = [(state, dock, '') for dock in (False,True) for state in states]
-        cases += [('ready',dock,panel) for dock in (False,True) for panel in ('card','menu','list','bubble','live','processing-preview','review','failed-review')]
+        cases += [('ready',dock,panel) for dock in (False,True) for panel in ('card','menu','list','bubble','live','processing-preview','placeholder','review','failed-review')]
         for state, dock, panel in cases:
             width, height = ((200,48) if dock else (180,150))
             if panel in ('card','menu','list'):
@@ -72,15 +80,16 @@ def run():
             window.evaluate_js('''(()=>{
               const [state,dock,panel]=%s;
               S=Object.assign(S,{state,dock,speaking:state==='speaking',expanded:['card','menu','list'].includes(panel),visible:true,
-                mic:.25,out:.25,micMuted:false,maeveMuted:false,review:null,bubble:null});
+                mic:qaMicFeedback.level,out:qaOutputFeedback.level,micBands:qaMicFeedback.bands,outBands:qaOutputFeedback.bands,
+                micMuted:false,maeveMuted:false,review:null,bubble:null});
               hovering=true;document.body.classList.add('hover');
               document.getElementById('menu').classList.toggle('open',panel==='menu');
               document.getElementById('list').classList.toggle('open',panel==='list');
               if(panel==='bubble')S.bubble={id:Date.now(),who:'you',text:'A longer reply '.repeat(50)};
-              if(panel==='live'||panel==='processing-preview'){
+              if(['live','processing-preview','placeholder'].includes(panel)){
                 S.state=panel==='live'?'dictating':'processing';
-                S.bubble={id:'live-preview',who:'you',live:panel==='live',processing:panel==='processing-preview',
-                  text:'The words I am saying appear above the orb while I hold the button.'};
+                S.bubble={id:'live-preview',who:'you',live:panel==='live',processing:panel!=='live',
+                  text:panel==='placeholder'?'Transcribing…':'The words I am saying appear above the orb while I hold the button.'};
               }
               if(['review','failed-review'].includes(panel))S.review={id:Date.now(),text:'Please check the Windows build and fix the cause.',
                 title:'Selected thread',sending:false,error:panel==='failed-review'?'Temporary failure':''};
@@ -89,7 +98,7 @@ def run():
             time.sleep(.6 if panel else .25)
             ids = (['bar','barOrb','wave','barMic','barMaeve','barExpand'] if dock else ['muteMic','muteMaeve','toBar','orbWave'])
             ids += {'card':['card','delivery','fQuit'], 'menu':['card','menu'], 'list':['card','list'],
-                    'bubble':['bubble'], 'live':['bubble'], 'processing-preview':['bubble'],
+                    'bubble':['bubble'], 'live':['bubble'], 'processing-preview':['bubble'], 'placeholder':['bubble','btext'],
                     'review':['review','reviewSend'], 'failed-review':['review','reviewSend']}.get(panel,[])
             result = window.evaluate_js('''(()=>{
               const bad=[];for(const id of %s){const r=document.getElementById(id).getBoundingClientRect();
@@ -99,7 +108,7 @@ def run():
             result.update(state=state,dock=dock,panel=panel)
             report['cases'].append(result)
             if result['bad'] or result['errors']:report['failures'].append(result)
-            if panel in ('review','menu','live','processing-preview') or state=='dictating':
+            if panel in ('review','menu','live','processing-preview','placeholder') or state=='dictating':
                 capture(('bar' if dock else 'orb')+'-'+(panel or state))
         preview = window.evaluate_js('''(()=>{
           S.review=null;S.bubble={id:'revision-test',who:'you',live:true,text:'Open the wrong file'};tickBubble(.1);
@@ -115,6 +124,15 @@ def run():
         if (not all(preview[key] for key in ('revised','liveLabel','processingLabel'))
                 or preview['finalText']!='Final cleaned words.' or preview['errors']):
             report['failures'].append({'preview':preview})
+        mask = window.evaluate_js('''(()=>{
+          S.review=null;render();
+          S.bubble={id:'top-line-mask',who:'you',processing:true,text:'Transcribing…'};tickBubble(.01);
+          const shortMask=getComputedStyle(btext).maskImage;
+          S.bubble.text='Every line should remain readable, with no dark fade at the top. '.repeat(25);tickBubble(.01);
+          return {shortMask,mask:getComputedStyle(btext).maskImage,webkitMask:getComputedStyle(btext).webkitMaskImage};
+        })()''')
+        report['textMask']=mask
+        if mask['shortMask']!='none' or mask['mask']!='none' or mask['webkitMask']!='none':report['failures'].append({'textMask':mask})
         words = window.evaluate_js('''(()=>{
           S.bubble={id:'animated-words',who:'you',live:true,text:'Please inspect this'};tickBubble(.1);
           const first=btext.querySelector('.word');
@@ -128,7 +146,7 @@ def run():
         report['words']=words
         if not all(words[key] for key in ('stablePrefix','animated','revised')) or words['errors']:
             report['failures'].append({'words':words})
-        window.evaluate_js('''S.review=null;S.expanded=false;applyExpanded(false);S.dock=false;S.state='dictating';S.mic=0;render();''')
+        window.evaluate_js('''S.review=null;S.expanded=false;applyExpanded(false);S.dock=false;S.state='dictating';S.mic=0;S.micBands=Array(11).fill(0);render();''')
         resize(340,300)
         window.evaluate_js('''window.qaWaveHeight=()=>{
           const canvas=document.getElementById('orbWave');if(!canvas)return 0;
@@ -138,16 +156,27 @@ def run():
           return Math.max(0,bottom-top+1);
         };''')
         time.sleep(1.1)
-        window.evaluate_js('window.qaQuietRadius=gl.getUniform(prog,U.uR);window.qaQuietWave=qaWaveHeight();S.mic=.02;render();')
+        window.evaluate_js('''window.qaBandHeights=()=>{
+          const canvas=document.getElementById('orbWave'),ctx=canvas.getContext('2d');
+          return Array.from({length:11},(_,i)=>{
+            const x=Math.floor((i+.5)*canvas.width/11),pixels=ctx.getImageData(x,0,1,canvas.height).data;
+            let n=0;for(let y=0;y<canvas.height;y++)if(pixels[y*4+3]>20)n++;return n;
+          });
+        };
+          window.qaQuietRadius=gl.getUniform(prog,U.uR);window.qaQuietWave=qaWaveHeight();
+          S.mic=qaMicFeedback.level;S.micBands=qaMicFeedback.bands;render();''')
         time.sleep(.8)
         audio = window.evaluate_js('''(()=>{
           const wave=document.getElementById('orbWave');
           return {radiusRatio:gl.getUniform(prog,U.uR)/qaQuietRadius,
             waveform:!!wave&&getComputedStyle(wave).opacity==='1',
-            quietWave:qaQuietWave,voiceWave:qaWaveHeight(),errors:qaErrors.slice()};
+            quietWave:qaQuietWave,voiceWave:qaWaveHeight(),bandHeights:qaBandHeights(),
+            expectedBand:qaMicFeedback.dominant,errors:qaErrors.slice()};
         })()''')
         report['audio']=audio
-        if audio['radiusRatio']<1.02 or not audio['waveform'] or audio['voiceWave']<=audio['quietWave'] or audio['errors']:
+        if (audio['radiusRatio']<1.04 or not audio['waveform'] or audio['voiceWave']<=audio['quietWave']
+                or max(audio['bandHeights'])-min(audio['bandHeights'])<4
+                or audio['bandHeights'].index(max(audio['bandHeights']))!=audio['expectedBand'] or audio['errors']):
             report['failures'].append({'audio':audio})
         window.evaluate_js('''S.bubble={id:'motion-capture',who:'you',live:true,text:'Your voice moves the orb. New words rise gently into view.'};tickBubble(.01);''')
         time.sleep(.1)
@@ -166,7 +195,7 @@ def run():
         window.evaluate_js('''S.state='ready';S.speaking=false;S.mic=0;S.out=0;S.bubble=null;render();''')
         time.sleep(1.1)
         window.evaluate_js('''window.qaPlaybackQuiet=gl.getUniform(prog,U.uR);
-          S.state='done';S.speaking=true;S.out=.02;
+          S.state='done';S.speaking=true;S.out=qaOutputFeedback.level;S.outBands=qaOutputFeedback.bands;
           S.bubble={id:'playback-end',who:'maeve',text:'These final words remain steady as the spoken reply finishes.'};render();tickBubble(1);
           window.qaBeforeFinish=shown;S.speaking=false;S.state='ready';tickBubble(.2);
           window.qaFinishAdvance=shown-qaBeforeFinish;
@@ -174,9 +203,12 @@ def run():
         time.sleep(.7)
         playback = window.evaluate_js('''({waveform:getComputedStyle(orbWave).opacity==='1',
           radiusRatio:gl.getUniform(prog,U.uR)/qaPlaybackQuiet,
+          bandHeights:qaBandHeights(),expectedBand:qaOutputFeedback.dominant,
           finishAdvance:qaFinishAdvance,errors:qaErrors.slice()})''')
         report['playback']=playback
-        if not playback['waveform'] or playback['radiusRatio']<1.02 or playback['finishAdvance']>.61 or playback['errors']:
+        if (not playback['waveform'] or playback['radiusRatio']<1.04 or playback['finishAdvance']>.61
+                or max(playback['bandHeights'])-min(playback['bandHeights'])<4
+                or playback['bandHeights'].index(max(playback['bandHeights']))!=playback['expectedBand'] or playback['errors']):
             report['failures'].append({'playback':playback})
         window.evaluate_js('''S.speaking=false;S.state='ready';S.out=0;render();tickBubble(10);S.bubble=null;tickBubble(0);''')
         exit_opacity=[]

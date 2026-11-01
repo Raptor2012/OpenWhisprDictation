@@ -18,6 +18,7 @@ import ptts
 import sounddevice as sd
 
 from live_reader_core import Message, MessageFeed
+from t3_voice_core import audio_feedback
 from diagnostics import write_status
 
 ROOT = Path(__file__).resolve().parent
@@ -35,6 +36,7 @@ class ContinuousAudio:
         self.callbacks = 0
         self.output_underflows = 0
         self.level = 0.0
+        self.spectrum = [0.0]*11
         self.stream = sd.RawOutputStream(samplerate=24000, channels=1, dtype='int16',
                                          blocksize=480, latency='low', callback=self.callback)
         self.stream.start()
@@ -58,9 +60,9 @@ class ContinuousAudio:
                 else:
                     self.chunks[0] = chunk[take:]
             self.played_samples += pos // 2
-            samples = np.frombuffer(target, dtype='<i2').astype('f4') / 32768 if pos else None
-            level = float(np.sqrt(np.mean(samples * samples))) if pos else 0.0
+            level,bands = audio_feedback(target,24000) if pos else (0.0,[0.0]*11)
             self.level = max(level, self.level * .86)
+            self.spectrum = [max(value,previous*.74) for value,previous in zip(bands,self.spectrum)]
             self.cv.notify_all()
 
     def reset(self):
@@ -69,6 +71,7 @@ class ContinuousAudio:
             self.chunks.clear()
             self.pending = 0
             self.level = 0.0
+            self.spectrum = [0.0]*11
             self.cv.notify_all()
             return self.epoch
 

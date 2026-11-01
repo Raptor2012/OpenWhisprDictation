@@ -171,7 +171,11 @@ def tone(steps, ms=70, volume=0.12):
 
 
 def surface_hit_rects(regions, surface, scale):
-    """Native shape follows visible UI only; the rest of the fixed surface is click-through."""
+    """Native shape follows visible UI only; the rest of the fixed surface is click-through.
+
+    The shape is one bounding rectangle. A union of rectangles (a wide bubble over the narrower
+    orb) has concave inner edges, and on this DWM-extended WebView2 window those edges left
+    1 px grey columns beside the orb that stayed until the next region change."""
     rects=[]
     for item in regions[:16] if isinstance(regions,list) else []:
         if not isinstance(item,dict) or item.get('id') not in ('orbwrap','bar','card','bubble','review'):
@@ -187,7 +191,9 @@ def surface_hit_rects(regions, surface, scale):
                 rects.append((math.floor(left*scale),math.floor(top*scale),math.ceil(right*scale),math.ceil(bottom*scale)))
         except (ValueError,TypeError,KeyError):
             continue
-    return tuple(sorted(set(rects)))
+    if not rects:
+        return ()
+    return ((min(r[0] for r in rects),min(r[1] for r in rects),max(r[2] for r in rects),max(r[3] for r in rects)),)
 
 
 class Engine:

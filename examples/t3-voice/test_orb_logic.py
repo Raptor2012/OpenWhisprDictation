@@ -903,6 +903,13 @@ class FixedOrbSurfaceTests(unittest.TestCase):
         rects=t3_voice.surface_hit_rects([{'id':'card','x':12,'y':130,'width':316,'height':200},{'id':'unknown','x':0,'y':0,'width':340,'height':480}],(340,480),1)
         self.assertEqual(((0,90,340,370),),rects)
 
+    def test_bubble_and_orb_share_one_rectangle_without_inner_region_edges(self):
+        # An L-shaped union (wide bubble over the narrower orb) left 1 px grey columns on the
+        # orb's sides below the bubble; one bounding rectangle has no concave edges.
+        rects=t3_voice.surface_hit_rects([{'id':'orbwrap','x':80,'y':330,'width':180,'height':150},
+                                          {'id':'bubble','x':20,'y':200,'width':300,'height':168}],(340,480),1)
+        self.assertEqual(((0,160,340,480),),rects)
+
 
 class SurfaceRegionOwnershipTests(unittest.TestCase):
     def test_regions_are_cached_and_windows_owns_only_the_combined_handle(self):

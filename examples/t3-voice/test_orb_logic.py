@@ -16,7 +16,7 @@ from live_reader_core import Message
 
 def engine(**fields):
     e = t3_voice.Engine.__new__(t3_voice.Engine)
-    defaults = dict(orb_anchor=None,card_close_deadline=None,review_poll_at=0,dictation_started_wall=0,settled_feed_run='',synthesis_done_run='',agent={},visual_events={'sent':0,'interrupt':0},high_contrast=False,reduced_motion=False,choosing_delivery=False, mic_device="", speaker_device="", asr_pending=0, panel_extra=False, review=None, delivery='immediate', follow_active=False, active_thread=None, dock=False, dict_state='', expanded=False, hovered=False, pin_until=0.0, pending=None, state='ready', confirmed=False,
+    defaults = dict(native_placement=None,hit_rects=None,orb_anchor=None,card_close_deadline=None,review_poll_at=0,dictation_started_wall=0,settled_feed_run='',synthesis_done_run='',agent={},visual_events={'sent':0,'interrupt':0},high_contrast=False,reduced_motion=False,choosing_delivery=False, mic_device="", speaker_device="", asr_pending=0, panel_extra=False, review=None, delivery='immediate', follow_active=False, active_thread=None, dock=False, dict_state='', expanded=False, hovered=False, pin_until=0.0, pending=None, state='ready', confirmed=False,
                     sent_at=0.0, error_at=0.0, t3_min=False, bubble=None, bubble_until=0.0, bubble_seq=0,
                     bubble_run=None, silent=deque(), meta={}, dict_preview_text='', dict_preview_until=0,
                     dict_preview_session=0, dict_preview=None, dictating=False, mic_level=0, current=None,
@@ -882,3 +882,40 @@ class ComposerAndEdgeRegressionTests(unittest.TestCase):
             for i in range(10):e.place(t3_voice.CARD);e.place(t3_voice.COMPACT)
         centres=[args[2]+args[4]/2 for args in calls]
         self.assertLessEqual(max(centres)-min(centres),.5)
+
+
+class FixedOrbSurfaceTests(unittest.TestCase):
+    def test_toggling_panels_does_not_resize_or_reposition_native_surface(self):
+        calls=[]
+        e=engine(hwnd=100,size=None,orb_anchor=(700,900),scale=lambda:1,anchor=lambda:(700,900),native_placement=None)
+        with patch.object(t3_voice.user32,'MonitorFromPoint',return_value=0),patch.object(t3_voice.user32,'GetMonitorInfoW',return_value=0),patch.object(t3_voice.user32,'SetWindowPos',side_effect=lambda *args:calls.append(args)):
+            for size in (t3_voice.COMPACT,t3_voice.CARD,t3_voice.BUBBLE,t3_voice.COMPACT,t3_voice.BAR,t3_voice.BAR_CARD,(320,480),t3_voice.COMPACT):e.place(size)
+        self.assertEqual(1,len(calls),'a toggle must not change the native compositor surface')
+        self.assertEqual((340,480),e.viewport_target)
+
+    def test_idle_hit_region_leaves_unused_stage_click_through(self):
+        self.assertTrue(hasattr(t3_voice,'surface_hit_rects'),'shaped native surface regions missing')
+        rects=t3_voice.surface_hit_rects([{'id':'orbwrap','x':80,'y':330,'width':180,'height':150}],(340,480),1)
+        self.assertEqual(((80,330,260,480),),rects)
+
+    def test_panel_regions_cover_shadow_but_reject_invalid_regions(self):
+        self.assertTrue(hasattr(t3_voice,'surface_hit_rects'),'shaped native surface regions missing')
+        rects=t3_voice.surface_hit_rects([{'id':'card','x':12,'y':130,'width':316,'height':200},{'id':'unknown','x':0,'y':0,'width':340,'height':480}],(340,480),1)
+        self.assertEqual(((0,90,340,370),),rects)
+
+
+class SurfaceRegionOwnershipTests(unittest.TestCase):
+    def test_regions_are_cached_and_windows_owns_only_the_combined_handle(self):
+        e=engine(hwnd=100,lock=threading.RLock(),viewport_target=(340,480),scale=lambda:1)
+        regions=[{'id':'orbwrap','x':80,'y':330,'width':180,'height':150}]
+        with patch.object(t3_voice.gdi32,'CreateRectRgn',side_effect=[101,102]) as create,patch.object(t3_voice.gdi32,'CombineRgn',return_value=1),patch.object(t3_voice.gdi32,'DeleteObject') as delete,patch.object(t3_voice.user32,'SetWindowRgn',return_value=1) as apply:
+            e.set_hit_regions(regions);e.set_hit_regions(regions)
+        self.assertEqual(2,create.call_count);apply.assert_called_once_with(100,101,True)
+        delete.assert_called_once_with(102)
+        self.assertEqual(((80,330,260,480),),e.hit_rects)
+
+    def test_allocation_failure_does_not_remove_existing_click_through_shape(self):
+        e=engine(hwnd=100,lock=threading.RLock(),viewport_target=(340,480),scale=lambda:1)
+        with patch.object(t3_voice.gdi32,'CreateRectRgn',return_value=0),patch.object(t3_voice.user32,'SetWindowRgn') as apply:
+            e.set_hit_regions([{'id':'orbwrap','x':80,'y':330,'width':180,'height':150}])
+        apply.assert_not_called()

@@ -37,6 +37,7 @@ ROOT = Path(__file__).resolve().parent
 DB = Path.home() / '.t3/userdata/statev2.sqlite'
 RATE = 16000
 FRAME = 320  # 20 ms at 16 kHz
+SURFACE = (340, 480)  # constant compositor size; card toggles never resize the WebView
 COMPACT, BUBBLE, CARD = (180, 150), (340, 300), (320, 360)
 BAR, BAR_BUBBLE, BAR_CARD = (200, 48), (340, 214), (320, 270)   # toolbar mode
 OPENWHISPR_ENV = Path(os.environ.get('APPDATA', '')) / 'OpenWhisprDictation/.env'
@@ -53,6 +54,7 @@ kernel32.QueryFullProcessImageNameW.argtypes = [wintypes.HANDLE, wintypes.DWORD,
 kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
 gdi32.CreateRectRgn.restype = wintypes.HANDLE
 gdi32.DeleteObject.argtypes = [wintypes.HANDLE]
+gdi32.CombineRgn.argtypes = [wintypes.HANDLE,wintypes.HANDLE,wintypes.HANDLE,ctypes.c_int]
 user32.GetWindowRgn.argtypes = [wintypes.HWND, wintypes.HANDLE]
 user32.SetWindowRgn.argtypes = [wintypes.HWND, wintypes.HANDLE, wintypes.BOOL]
 user32.SetWindowPos.argtypes = [wintypes.HWND, wintypes.HWND, ctypes.c_int, ctypes.c_int, ctypes.c_int,
@@ -168,6 +170,26 @@ def tone(steps, ms=70, volume=0.12):
     return (np.concatenate(out) * 32767).astype('<i2').tobytes()
 
 
+def surface_hit_rects(regions, surface, scale):
+    """Native shape follows visible UI only; the rest of the fixed surface is click-through."""
+    rects=[]
+    for item in regions[:16] if isinstance(regions,list) else []:
+        if not isinstance(item,dict) or item.get('id') not in ('orbwrap','bar','card','bubble','review'):
+            continue
+        try:
+            x,y,w,h=[float(item[key]) for key in ('x','y','width','height')]
+            if not all(math.isfinite(v) for v in (x,y,w,h)) or w<=0 or h<=0:
+                continue
+            pad=40 if item['id'] in ('card','bubble','review') else 24 if item['id']=='bar' else 0
+            left,top=max(0,x-pad),max(0,y-pad)
+            right,bottom=min(surface[0],x+w+pad),min(surface[1],y+h+pad)
+            if right>left and bottom>top:
+                rects.append((math.floor(left*scale),math.floor(top*scale),math.ceil(right*scale),math.ceil(bottom*scale)))
+        except (ValueError,TypeError,KeyError):
+            continue
+    return tuple(sorted(set(rects)))
+
+
 class Engine:
     def __init__(self, thread=None):
         self.routes = Routes(ROOT / 't3-voice-settings.json')
@@ -217,7 +239,9 @@ class Engine:
         self.window = None
         self.hwnd = None
         self.size = COMPACT
-        self.viewport_target = COMPACT
+        self.viewport_target = SURFACE
+        self.native_placement = None
+        self.hit_rects = None
         self.orb_anchor = None
         self.drag_gesture = 0
         self.drag_origin = None
@@ -1351,6 +1375,9 @@ class Engine:
         user32.GetCursorPos(ctypes.byref(point))
         user32.GetWindowRect(self.hwnd, ctypes.byref(rect))
         inside = rect.left <= point.x < rect.right and rect.top <= point.y < rect.bottom
+        if self.hit_rects is not None:
+            x,y=point.x-rect.left,point.y-rect.top
+            inside=any(left<=x<right and top<=y<bottom for left,top,right,bottom in self.hit_rects)
         self.outside_since = None if inside else (self.outside_since or now)
         if (self.card_focused and not ours and not inside) or (self.outside_since and now - self.outside_since > 2.5):
             self.card_close_deadline = now + .7
@@ -1429,28 +1456,52 @@ class Engine:
             self.prefs.set('anchor', [cx, bottom])
 
     def place(self, size, anchor=None):
-        """Resize around a fixed bottom-centre anchor so the orb itself never jumps."""
+        """Keep the compositor surface fixed; only deliberate dragging changes its position."""
         if size == self.size and anchor is None:
             return
-        cx, bottom = anchor or self.orb_anchor or self.anchor()
-        scale = self.scale()
-        width, height = int(size[0] * scale), int(size[1] * scale)
-        monitor = user32.MonitorFromPoint(wintypes.POINT(int(cx), int(bottom)-20), 2)
-        info = MONITORINFO()
-        info.size = ctypes.sizeof(info)
-        if user32.GetMonitorInfoW(monitor, ctypes.byref(info)):
-            width, height = min(width, info.work.right-info.work.left), min(height, info.work.bottom-info.work.top)
-            # Keep room for normal settings and bubbles even while compact. Otherwise the
-            # monitor clamp itself moves the orb on each open/close near a screen edge.
-            reserve = (max(width,int(BUBBLE[0]*scale)),max(height,int(CARD[1]*scale)))
-            cx, bottom = clamp_anchor((cx,bottom),reserve,
-                                      (info.work.left,info.work.top,info.work.right,info.work.bottom))
-        cx,bottom = round(cx),round(bottom)
-        self.orb_anchor = (cx,bottom)
-        user32.SetWindowPos(self.hwnd, HWND_TOPMOST, int(cx - width / 2), int(bottom - height), width, height,
-                            SWP_NOACTIVATE)
-        self.viewport_target = (width / scale, height / scale)
-        self.size = size
+        cx,bottom=anchor or self.orb_anchor or self.anchor()
+        scale=self.scale()
+        width,height=round(SURFACE[0]*scale),round(SURFACE[1]*scale)
+        monitor=user32.MonitorFromPoint(wintypes.POINT(int(cx),int(bottom)-20),2)
+        info=MONITORINFO();info.size=ctypes.sizeof(info)
+        if user32.GetMonitorInfoW(monitor,ctypes.byref(info)):
+            width,height=min(width,info.work.right-info.work.left),min(height,info.work.bottom-info.work.top)
+            cx,bottom=clamp_anchor((cx,bottom),(width,height),(info.work.left,info.work.top,info.work.right,info.work.bottom))
+        cx,bottom=round(cx),round(bottom)
+        self.orb_anchor=(cx,bottom)
+        placement=(round(cx-width/2),bottom-height,width,height)
+        if placement != self.native_placement:
+            user32.SetWindowPos(self.hwnd,HWND_TOPMOST,*placement,SWP_NOACTIVATE)
+            self.native_placement=placement
+            self.meta['nativeGeometryChanges']=self.meta.get('nativeGeometryChanges',0)+1
+        self.viewport_target=(width/scale,height/scale)
+        self.size=size
+
+    def set_hit_regions(self, regions):
+        with self.lock:
+            if not self.hwnd:
+                return
+            rects=surface_hit_rects(regions,self.viewport_target,self.scale())
+            if not rects:
+                width,height=self.viewport_target
+                rects=surface_hit_rects([{'id':'bar' if self.dock else 'orbwrap','x':(width-(200 if self.dock else 180))/2,
+                    'y':height-(48 if self.dock else 150),'width':200 if self.dock else 180,'height':48 if self.dock else 150}],self.viewport_target,self.scale())
+            if rects==self.hit_rects:
+                return
+            combined=gdi32.CreateRectRgn(0,0,0,0)
+            if not combined:return
+            try:
+                for left,top,right,bottom in rects:
+                    part=gdi32.CreateRectRgn(left,top,right,bottom)
+                    if not part:return
+                    try:
+                        if not gdi32.CombineRgn(combined,combined,part,2):return
+                    finally:gdi32.DeleteObject(part)
+                if user32.SetWindowRgn(self.hwnd,combined,True):
+                    combined=None  # Windows owns the region after success.
+                    self.hit_rects=rects
+            finally:
+                if combined:gdi32.DeleteObject(combined)
 
     def drag_window(self, gesture, dx, dy):
         """Only deliberate page drags reach here; deltas always refer to one fixed origin."""
@@ -1470,18 +1521,20 @@ class Engine:
 
     def attach(self, hwnd):
         """Called once the native window exists: position it on the saved anchor or the work-area corner."""
-        self.hwnd = hwnd
-        # pywebview must initialize pythonnet first; concurrent clr imports can break its startup.
-        threading.Thread(target=self.watch_active_thread, daemon=True).start()
-        saved = self.prefs.get('anchor')
-        if not (saved and user32.MonitorFromPoint(wintypes.POINT(int(saved[0]), int(saved[1]) - 20), 0)):
-            area = wintypes.RECT()
-            user32.SystemParametersInfoW(0x30, 0, ctypes.byref(area), 0)
-            scale = self.scale()
-            saved = [area.right - int(120 * scale), area.bottom - int(8 * scale)]
-        self.size = None
-        self.place(self.target_size(), anchor=saved)
-        self.visible = True  # navigation shows the window once; the normal fade hides it after the intro
+        with self.lock:
+            self.hwnd = hwnd
+            # pywebview must initialize pythonnet first; concurrent clr imports can break its startup.
+            threading.Thread(target=self.watch_active_thread, daemon=True).start()
+            saved = self.prefs.get('anchor')
+            if not (saved and user32.MonitorFromPoint(wintypes.POINT(int(saved[0]), int(saved[1]) - 20), 0)):
+                area = wintypes.RECT()
+                user32.SystemParametersInfoW(0x30, 0, ctypes.byref(area), 0)
+                scale = self.scale()
+                saved = [area.right - int(120 * scale), area.bottom - int(8 * scale)]
+            self.size = None
+            self.place(self.target_size(), anchor=saved)
+            self.set_hit_regions([])
+            self.visible = True  # navigation shows the window once; the normal fade hides it after the intro
 
     def set_hover(self, hovered):
         self.hovered = hovered
@@ -1552,8 +1605,12 @@ class Api:
     def set_speaker_device(self, name):
         self._engine.set_speaker_device(name)
 
-    def poll(self, choosing_delivery=False):
+    def set_hit_regions(self, regions):
+        self._engine.set_hit_regions(regions)
+
+    def poll(self, choosing_delivery=False, regions=None):
         self._engine.choosing_delivery = bool(choosing_delivery)
+        if regions is not None:self._engine.set_hit_regions(regions)
         return self._engine.snapshot()
 
     def select(self, thread):
@@ -1644,7 +1701,7 @@ def main():
     args = parser.parse_args()
     engine = Engine(args.thread)
     window = webview.create_window('Maeve', url=str(ROOT / 'ui/orb.html'), js_api=Api(engine),
-                                   width=COMPACT[0], height=COMPACT[1], x=0, y=0, frameless=True,
+                                   width=SURFACE[0], height=SURFACE[1], x=0, y=0, frameless=True,
                                    transparent=True, on_top=True, easy_drag=False, resizable=False, focus=False,
                                    min_size=(100, BAR[1]), background_color='#000000')
     engine.window = window

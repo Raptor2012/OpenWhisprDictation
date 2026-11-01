@@ -482,3 +482,59 @@ class SentDraftRemovalTests(unittest.TestCase):
         self.assertIsNone(self.remove('Different draft','Dictated words.'))
         self.assertIsNone(self.remove('Yesterday','Yes'))
         self.assertIsNone(self.remove('Text','  '))
+
+class CinematicVoiceFxTests(unittest.TestCase):
+    def test_body_is_preserved_while_subsonic_rumble_is_removed(self):
+        import numpy as np
+        from t3_voice_core import _minimum_phase_eq
+        h = _minimum_phase_eq(24000)
+        gain = lambda hz: abs(np.sum(h * np.exp(-2j*np.pi*hz*np.arange(len(h))/24000)))
+        # A cinematic voice needs fundamental/body; the previous steep 135 Hz cut thinned it.
+        self.assertGreater(gain(120) / gain(1000), .82)
+        self.assertLess(gain(30) / gain(1000), .25)
+
+    def test_dense_full_scale_audio_keeps_true_output_headroom(self):
+        import numpy as np
+        for rate in (16000, 24000, 48000):
+            with self.subTest(rate=rate):
+                t = np.arange(rate//2)/rate
+                x = np.clip(.8*np.sin(2*np.pi*185*t)+.65*np.sin(2*np.pi*2800*t), -1, 1).astype(np.float32)
+                fx = VoiceFx(rate=rate)
+                y = np.concatenate([fx.process(x), fx.flush()])
+                self.assertTrue(np.isfinite(y).all())
+                self.assertLessEqual(float(np.abs(y).max()), .920001)
+
+    def test_tail_release_continues_the_entire_voice_chain(self):
+        import numpy as np
+        t = np.arange(2400)/24000
+        x = (.18*np.sin(2*np.pi*183*t)+.08*np.cos(2*np.pi*2200*t)).astype(np.float32)
+        speech, reference = VoiceFx(), VoiceFx()
+        speech.process(x); reference.process(x)
+        tail = speech.drain(.05)
+        continued = reference.process(np.zeros(1200, np.float32))
+        # Release starts at unity; missing dry/EQ/doubler history produces a click here.
+        np.testing.assert_allclose(tail[:24], continued[:24], atol=.00002)
+
+    def test_tail_is_identical_across_release_chunk_sizes(self):
+        import numpy as np
+        x = VoiceFxTests().signal()[:9000]
+        a, b = VoiceFx(), VoiceFx()
+        a.process(x); b.process(x)
+        whole = a.flush(.35)
+        slices = np.concatenate([b.drain(.05) for _ in range(7)])
+        np.testing.assert_allclose(whole, slices, atol=1e-5)
+        self.assertEqual(0., float(slices[-1]))
+        self.assertFalse(b.tail_live)
+
+    def test_tiny_irregular_chunks_and_reset_preserve_density_state(self):
+        import numpy as np
+        rng = np.random.default_rng(19)
+        x = (rng.normal(size=6000)*np.linspace(.01, .45, 6000)).astype(np.float32)
+        whole = VoiceFx().process(x)
+        fx = VoiceFx()
+        parts, at = [], 0
+        for size in (1, 7, 31, 1001, 4, 333, 19, 2400, 2204):
+            parts.append(fx.process(x[at:at+size])); at += size
+        np.testing.assert_allclose(whole, np.concatenate(parts), atol=1e-5)
+        fx.reset()
+        np.testing.assert_allclose(whole, fx.process(x), atol=1e-6)

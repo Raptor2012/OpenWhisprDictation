@@ -18,6 +18,7 @@
   #cap { position:absolute; left:0; right:0; bottom:14px; text-align:center; font-size:11.5px; letter-spacing:.3px; color:var(--muted); overflow:hidden; text-overflow:ellipsis;
          text-shadow:0 1px 6px rgba(0,0,0,.65); opacity:0; transform:translateY(5px); transition:opacity .35s var(--soft), transform .5s var(--spring); pointer-events:none; white-space:nowrap; }
   #cap.show { opacity:1; transform:none; }
+  body[data-state='thinking'] #cap { color:#d0f5ff; font-weight:600; text-shadow:0 0 12px rgba(35,170,255,.65),0 1px 6px rgba(0,0,0,.65); }
   #orbWave { position:absolute; left:42px; bottom:6px; width:96px; height:18px; pointer-events:none;
              opacity:0; transform:translateY(3px) scaleX(.85); transition:opacity .18s ease, transform .38s var(--soft); }
   body.audio-active #orbWave { opacity:1; transform:none; }
@@ -295,7 +296,7 @@ void main(){
 
   // voice bloom: absent at rest (keeps the deep-space look), glows outward while someone speaks
   float bloom = exp(-max(0.0, r - 1.0) * (5.0 - 1.6*uLevel)) * smoothstep(0.98, 1.04, r);
-  float bloomAlpha = bloom * (0.32*uLevel + 0.16*uThinking);
+  float bloomAlpha = bloom * (0.32*uLevel + 0.22*uThinking);
   col += vec4(mix(uB, uC, 0.4) * bloomAlpha, bloomAlpha);
 
   // busy ring
@@ -324,9 +325,9 @@ void main(){
     vec3 n = normalize(vec3(d.x/wob, d.y/wob, z));
     vec3 sp = vec3(n.xy*1.2, z*0.6);
     // Thinking uses the same continuous fluid field as speech, with a gentle inward twist.
-    float turn = uThinking*(fl*0.16 + r*0.65);
+    float turn = uThinking*(fl*0.16 + r*0.65) + uIdle*0.08*sin(fl*0.28);
     sp.xy = mat2(cos(turn),-sin(turn),sin(turn),cos(turn))*sp.xy;
-    sp.xy *= 1.0 + uThinking*0.06*sin(fl*0.38-r*2.0);
+    sp.xy *= 1.0 + uThinking*0.06*sin(fl*0.38-r*2.0) + uIdle*0.025*sin(fl*0.45-r*1.4);
     vec3 warp = vec3(fbm(sp*0.9 + vec3(0.0, fl*0.16, fl*0.10)), fbm(sp*0.9 + vec3(5.2, -fl*0.12, fl*0.08)), 0.0);
     float f1 = fbm(sp*1.3 + warp*1.6 + vec3(fl*0.10, -fl*0.07, fl*0.12 + 0.25*uLevel));
     float f2 = fbm(sp*2.0 - warp*1.2 + vec3(-fl*0.16, fl*0.09, 3.0));
@@ -334,7 +335,7 @@ void main(){
     vec3 body = mix(uA * 0.22, uB * 0.62, band);                                   // dark nebula base
     body += mix(uB, uC, 0.5) * smoothstep(0.30, 0.80, f2 + 0.45*uLevel) * (0.2 + 0.5*uLevel);  // filaments flare with voice, coloured not white
     float core = smoothstep(0.0, 0.9, r);                                          // the centre falls into shadow
-    body *= mix(min(1.0,0.25 + 0.75*uLevel + 0.35*uThinking), 1.0, core);                                    // the core lights up as you speak
+    body *= mix(min(1.0,0.25 + 0.75*uLevel + 0.55*uThinking + 0.13*uIdle), 1.0, core);                                    // the core lights up as you speak
     vec3 L = normalize(vec3(-0.55, 0.75, 0.6));
     float fres = pow(1.0 - max(0.0, n.z), 2.2);
     vec3 H = normalize(L + vec3(0.0, 0.0, 1.0));
@@ -369,7 +370,7 @@ void main(){
 
 <script>
 const PAL = {
-  thinking:{a:[.015,.20,.48],b:[.12,.64,1.0],c:[.58,.90,1.0],glow:.95},
+  thinking:{a:[.02,.28,.58],b:[.12,.74,1.0],c:[.70,.96,1.0],glow:1.0},
   approval:{a:[.30,.16,.03],b:[.90,.52,.12],c:[1.0,.79,.37],glow:.85},
   input:{a:[.19,.13,.36],b:[.61,.44,.85],c:[.88,.78,1.0],glow:.65},
   loading:{a:[.20,.21,.26], b:[.42,.44,.52], c:[.72,.74,.80], glow:.25},
@@ -493,16 +494,17 @@ function frame(now){
   sLevel.t = audioS;
   sLevel.k = audioS > sLevel.x ? 170 : 70; sLevel.d = audioS > sLevel.x ? 26 : 17;
   sBusy.t = fx.trail;
-  sOff.t = S.voiceOn || playbackActive() || ['dictating','processing','done','failed'].includes(state) ? 0 : 1;
+  sOff.t = S.voiceOn || playbackActive() || ['thinking','approval','input','dictating','processing','done','failed'].includes(state) ? 0 : 1;
   sAppear.t = (S.visible || hovering || expanded || barMode) ? 1 : 0;
   if (state !== lastState) { sScale.v += (state==='hearing'||state==='speaking'||state==='dictating') ? 0.8 : state==='done' ? 1.3 : (state==='error'||state==='failed') ? -0.7 : 0.45; lastState = state; }
-  const breathe = calm ? 1 : 1 + 0.018*Math.sin(now/1700) + 0.006*Math.sin(now/730);
+  const idle=['ready','off','stopped'].includes(state);
+  const breathe = calm ? 1 : idle ? 1+.012*Math.sin(now/2100)+.004*Math.sin(now/910) : 1+.018*Math.sin(now/1700)+.006*Math.sin(now/730);
   sScale.t = breathe * (1 + 0.3*sLevel.x);
   const talking = ['hearing','dictating'].includes(state) || playbackActive();
   const groups = talking ? bandGroups(liveBands) : [0,0,0,0];
   for (let k = 0; k < 4; k++) { const g = Math.min(1, groups[k]*1.6); quad[k] += (g - quad[k]) * (1 - Math.exp(-dt * (g > quad[k] ? 9 : 3.5))); }
   const busyNow = state==='transcribing'||state==='sending'||state==='processing';
-  if(!calm) flow += dt * (0.5 + 2.0*sLevel.x + (busyNow ? 0.3 : 0));
+  if(!calm) flow += dt * ((idle ? .32 : state==='thinking' ? .85 : .5) + 2.0*sLevel.x + (busyNow ? 0.3 : 0));
   sPart.t = talking ? 0.55 + 0.45*Math.min(1, sLevel.x*1.5) : busyNow ? 0.4 : (S.visible ? 0.18 : 0);
   if(calm){sScale.x=sScale.t=1;sScale.v=0;sAppear.x=sAppear.t;sAppear.v=0;}
   const lvl = sLevel.step(dt), scale = sScale.step(dt)*(1-.18*fx.contraction), glow = sGlow.step(dt), b = sBusy.step(dt), off = sOff.step(dt);
@@ -695,7 +697,7 @@ const reviewEl = document.getElementById('review'), reviewText = document.getEle
 let reviewId = null, reviewEditVersion=0;
 let settingsGeneration = 0, settingsPending = 0, settingsWrites = Promise.resolve();
 let hoverGeneration=0, hoverPending=0, hoverWrites=Promise.resolve();
-let cardViewport=[320,360], cardClosing=false, finishCardExit=null, handledNativeClose=0;
+let cardViewport=[320,360], cardClosing=false, finishCardExit=null, handledNativeClose=0, lastHitRegions=null;
 function setText(el,value){if(el.textContent!==value)el.textContent=value;}
 function render(){
   if(!settingsPending)cardViewport=S.viewportTarget||[320,S.dock?270:360];
@@ -732,10 +734,10 @@ function render(){
     document.getElementById('reviewTitle').title = S.review.error || S.review.title || '';
   }
   document.getElementById('delivery').value = S.delivery || 'immediate';
-  const vs=visualState();
+  const vs=visualState();document.body.dataset.state=vs;
   const label = ['approval','input','thinking'].includes(vs)?LABEL[vs]:S.text || LABEL[S.state] || '';
   setText(cap,label);
-  cap.classList.toggle('show', !!label && S.visible && !S.bubble && !hovering && !expanded);
+  cap.classList.toggle('show', !!label && S.visible && !S.bubble && (!hovering||vs==='thinking') && !expanded);
   muteMic.classList.toggle('muted', S.micMuted);   muteMic.title = S.micMuted ? 'Resume T3 voice input' : 'Pause T3 voice input';
   muteMaeve.classList.toggle('muted', S.maeveMuted); muteMaeve.title = S.maeveMuted ? 'Unmute Maeve' : 'Mute Maeve';
   barMic.classList.toggle('muted', S.micMuted); barMic.title = muteMic.title;
@@ -769,6 +771,7 @@ function render(){
     list.innerHTML = ''; list.dataset.n = threadKeys;
     for (const t of S.threads) { const d = document.createElement('div'); d.textContent = t.title || '(untitled)'; d.title = t.id; d.onclick = (e)=>{ e.stopPropagation(); list.classList.remove('open'); panelExtra(); api('select', t.id); }; list.appendChild(d); }
   }
+  syncHitRegions();
 }
 const Q = new URLSearchParams(location.search), DEMO = Q.get('demo');
 function api(name, ...args){ if (!DEMO && window.pywebview) return pywebview.api[name](...args); }
@@ -789,7 +792,7 @@ async function poll(){
   const generation = settingsGeneration, wasPending = settingsPending > 0;
   const appearanceVersion=appearanceGeneration, appearanceWasPending=appearancePending>0;
   const hoverVersion=hoverGeneration, hoverWasPending=hoverPending>0;
-  try { acceptSnapshot(await pywebview.api.poll(choosingDelivery), generation, wasPending, appearanceVersion, appearanceWasPending, hoverVersion, hoverWasPending); } catch(e){}
+  try { acceptSnapshot(await pywebview.api.poll(choosingDelivery,currentHitRegions()), generation, wasPending, appearanceVersion, appearanceWasPending, hoverVersion, hoverWasPending); } catch(e){}
   setTimeout(poll, 50);
 }
 if (DEMO) {
@@ -809,10 +812,29 @@ if (DEMO) {
   window.addEventListener('pywebviewready', poll);
 }
 let wantExpanded = expanded;   // the latest requested state; the card opens only after the window grows
+function currentHitRegions(){
+  const regions=[];
+  for(const id of ['orbwrap','bar','card','bubble','review']){
+    const el=document.getElementById(id),style=getComputedStyle(el);
+    if(style.display==='none'||style.visibility==='hidden')continue;
+    if(id==='card'&&!el.classList.contains('open')&&!el.classList.contains('closing'))continue;
+    if(id==='bubble'&&!el.classList.contains('show')&&Number(style.opacity)<.01)continue;
+    const r=el.getBoundingClientRect();
+    if(r.width&&r.height)regions.push({id,x:r.left,y:r.top,width:r.width,height:r.height});
+  }
+  return regions;
+}
+function syncHitRegions(){
+  if(DEMO||!window.pywebview)return;
+  const regions=currentHitRegions(),key=JSON.stringify(regions);
+  if(key===lastHitRegions)return;
+  lastHitRegions=key;
+  Promise.resolve(api('set_hit_regions',regions)).catch(()=>{lastHitRegions=null;});
+}
 function cardViewportReady(){
   return innerWidth>=cardViewport[0]-1.5&&innerHeight>=cardViewport[1]-1.5;
 }
-function syncCardViewport(){card.classList.toggle('open',expanded&&cardViewportReady());}
+function syncCardViewport(){card.classList.toggle('open',expanded&&cardViewportReady());syncHitRegions();}
 window.addEventListener('resize',syncCardViewport);
 function closeCardPanels(){
   devicesEl?.classList.remove('open');document.getElementById('appearance').classList.remove('open');choosingDelivery=false;

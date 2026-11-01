@@ -47,14 +47,16 @@ def audio_feedback(pcm, sample_rate):
 
 
 def _minimum_phase_eq(rate, taps=512, grid=8192):
-    """Minimum-phase FIR for a fixed "interface voice" curve: no pre-ringing and no added delay."""
+    """Close cinematic speech EQ: retain body, remove rumble, and polish presence/air."""
     f = np.fft.rfftfreq(grid, 1 / rate)
     f[0] = 1.0
     octave = lambda centre: np.log2(f / centre)
-    gain_db = (20 * np.log10((f / 135) ** 2 / np.sqrt(1 + (f / 135) ** 4))      # 12 dB/oct high-pass: no boom
-               - 1.8 * np.exp(-(octave(320) / 0.6) ** 2)                         # less mud
-               + 3.8 * np.exp(-(octave(3300) / 0.75) ** 2)                       # presence: close, articulate
-               + 2.6 / (1 + np.exp(-octave(8500) * 3)))                          # air
+    gain_db = (20 * np.log10((f / 75) ** 2 / np.sqrt(1 + (f / 75) ** 4))
+               + 1.8 * np.exp(-(octave(165) / 0.8) ** 2)                         # chest/body without sub-bass
+               - 1.6 * np.exp(-(octave(430) / 0.6) ** 2)
+               + 3.1 * np.exp(-(octave(2850) / 0.8) ** 2)                        # intelligible foreground voice
+               - 1.7 * np.exp(-(octave(6400) / 0.35) ** 2)                       # restrain sharp sibilants
+               + 2.8 / (1 + np.exp(-octave(7900) * 3)))
     magnitude = 10 ** (gain_db / 20)
     full = np.concatenate([magnitude, magnitude[-2:0:-1]])
     cepstrum = np.fft.ifft(np.log(np.maximum(full, 1e-6))).real
@@ -116,30 +118,33 @@ class _OverlapAdd:
 
 
 class VoiceFx:
-    """Streaming "Techno audio effect" interface voice, numpy only, no added latency.
+    """Cinematic interface voice, numpy only, with immediate dry speech.
 
-    Chain: minimum-phase EQ (high-pass, presence, air) -> a very short modulated comb for the
-    holographic interface sheen -> light chorus -> faint ring-mod shimmer -> soft saturation,
-    plus parallel micro-reflection sheen and a tight, bright plate reverb with pre-delay. Chunked output equals one-shot output.
+    Body/presence EQ, smooth broadcast density, coherent micro-reflections, restrained
+    doubling and shimmer, then a speech-ducked short plate. The final soft ceiling keeps
+    mix peaks below PCM clipping. Every state follows samples, never chunk boundaries.
     """
-    def __init__(self, rate=24000, reverb=0.20, chorus=0.14, comb=0.21, ring=0.04, ring_hz=96.0,
-                 seconds=0.55, seed=7, sheen=0.10):
+    def __init__(self, rate=24000, reverb=0.25, chorus=0.23, comb=0.12, ring=0.025, ring_hz=96.0,
+                 seconds=0.48, seed=7, sheen=0.28):
         self.rate, self.wet, self.chorus, self.comb, self.ring, self.ring_hz = rate, reverb, chorus, comb, ring, ring_hz
         self.sheen = sheen
         self.eq = _OverlapAdd(_minimum_phase_eq(rate))
         rng = np.random.default_rng(seed)
         n = int(rate * seconds)
         t = np.arange(n) / rate
-        ir = rng.standard_normal(n) * np.exp(-t / 0.085)                           # compact plate: speech stays close
+        ir = rng.standard_normal(n) * np.exp(-t / 0.075)
         for delay, gain in ((0.016, 0.7), (0.021, -0.5), (0.029, 0.42), (0.034, -0.33), (0.047, 0.25)):
             ir[int(delay * rate)] += gain * 5                                     # dense early reflections
         ir[:int(0.014 * rate)] = 0.0                                              # 14 ms pre-delay: voice stays upfront
         ir = np.convolve(ir, np.ones(3) / 3, mode='same')                         # bright, not dark
-        ir -= np.convolve(ir, np.ones(48) / 48, mode='same')                      # no low-end wash in the tail
+        width = max(3, int(rate / 650))
+        ir -= np.convolve(ir, np.ones(width) / width, mode='same')                # no low-end wash in the tail
         ir *= np.linspace(1.0, 0.0, n) ** 0.5
         self.ir = (ir / np.sqrt(np.sum(ir * ir))).astype(np.float32)
         self.reverb = _OverlapAdd(self.ir)
         self.history = np.zeros(int(0.03 * rate), np.float32)
+        self.attack = np.exp(-1 / (.003 * rate))
+        self.release = np.exp(-1 / (.075 * rate))
         self.reset()
 
     def reset(self):
@@ -147,6 +152,7 @@ class VoiceFx:
         self.reverb.reset()
         self.history[:] = 0.0
         self.pos = 0
+        self.envelope = 0.0
         self.drained = 0
         self.tail_live = False   # True from the first processed chunk until the tail is released
 
@@ -160,46 +166,60 @@ class VoiceFx:
         if n == 0:
             return x
         x = self.eq(x)
+        # Causal peak envelope: stable even on single-sample chunks, no lookahead delay.
+        envelope = np.empty(n, np.float32)
+        level = self.envelope
+        for i, sample in enumerate(np.abs(x)):
+            value = float(sample)
+            coefficient = self.attack if value > level else self.release
+            level = value + coefficient * (level - value)
+            envelope[i] = level
+        self.envelope = level
+        gain = 1.32 * np.minimum(1.0, (.17 / np.maximum(envelope, 1e-8)) ** .48)
+        x = x * gain
         t = (self.pos + np.arange(n)) / self.rate
         buf = np.concatenate([self.history, x])
         at = len(self.history) + np.arange(n, dtype=np.float64)
         grid = np.arange(len(buf))
         comb_d = (0.00145 + 0.00015 * np.sin(2 * np.pi * 0.21 * t)) * self.rate
-        d1 = (0.009 + 0.002 * np.sin(2 * np.pi * 0.33 * t)) * self.rate
-        d2 = (0.014 + 0.0025 * np.sin(2 * np.pi * 0.51 * t + 1.3)) * self.rate
+        d1 = (0.0105 + 0.00045 * np.sin(2 * np.pi * 0.33 * t)) * self.rate
+        d2 = (0.0175 + 0.00065 * np.sin(2 * np.pi * 0.51 * t + 1.3)) * self.rate
         # Opposite-polarity micro reflections add a clean metallic edge without shifting pitch.
         sheen = 0.5 * (np.interp(at - .0032*self.rate, grid, buf) - np.interp(at - .0047*self.rate, grid, buf))
         y = (x + self.sheen * sheen + self.comb * np.interp(at - comb_d, grid, buf)
              + self.chorus * 0.5 * (np.interp(at - d1, grid, buf) + np.interp(at - d2, grid, buf)))
-        y = y / (1.0 + self.comb + self.sheen * 0.5 + self.chorus * 0.5)
+        y = y / (1.0 + self.comb * .45 + self.sheen * .2 + self.chorus * .25)
         y = y * (1.0 - self.ring + self.ring * np.sin(2 * np.pi * self.ring_hz * t))
-        y = (np.tanh(1.4 * y) / np.tanh(1.4)).astype(np.float32)                 # gentle density
+        y = (.72 * y + .28 * np.tanh(1.8 * y) / 1.8).astype(np.float32)           # parallel harmonic density
         wet = self.reverb(y)
         self.history = buf[-len(self.history):].astype(np.float32)
         self.pos += n
         self.drained = 0
         self.tail_live = True
-        return ((y + self.wet * wet) / (1.0 + self.wet * 0.5)).astype(np.float32)
+        mix = y + self.wet * wet / (1.0 + 2.5 * envelope)
+        return (.92 * np.tanh(mix / .92)).astype(np.float32)
 
     def drain(self, seconds=0.05, fade=0.35):
-        """Next slice of the reverb tail, faded over `fade` seconds since the last speech.
-        Unlike flush, the rest of the tail stays and blends into speech that starts meanwhile."""
-        n = int(seconds * self.rate)
-        tail = self.reverb.tail
-        part = tail[:n].copy()
-        self.reverb.tail = np.concatenate([tail[n:], np.zeros(len(part), np.float32)])
+        """Continue every DSP state through silence and apply a smooth terminal release."""
+        n = max(0, int(seconds * self.rate))
+        if n == 0:
+            return np.zeros(0, np.float32)
+        if not self.tail_live:
+            return np.zeros(n, np.float32)
         start = self.drained
-        gain = np.clip(1.0 - (start + np.arange(len(part))) / (fade * self.rate), 0.0, 1.0).astype(np.float32)
-        self.drained = start + len(part)
-        out = (self.wet * part * gain / (1.0 + self.wet * 0.5)).astype(np.float32)
-        if self.drained >= fade * self.rate:
+        part = self.process(np.zeros(n, np.float32))
+        duration = max(1, int(fade * self.rate))
+        phase = np.clip((start + np.arange(n)) / max(1, duration - 1), 0, 1)
+        gain = (.5 + .5 * np.cos(np.pi * phase)).astype(np.float32)
+        self.drained = start + n
+        out = part * gain
+        if self.drained >= duration:
             self.reset()
         return out
 
     def flush(self, seconds=0.35):
         """The audible part of the reverb tail, faded out; the stream is then silent."""
-        n = min(len(self.reverb.tail), int(seconds * self.rate))
-        out = self.wet * self.reverb.tail[:n] * np.linspace(1.0, 0.0, n, dtype=np.float32) / (1.0 + self.wet * 0.5)
+        out = self.drain(seconds, fade=seconds)
         self.reset()
         return out.astype(np.float32)
 

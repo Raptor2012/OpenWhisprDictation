@@ -490,10 +490,10 @@ def run():
         report['visualFeatures']=features
         if not all(v for k,v in features.items() if k!='errors') or features.get('errors'):
             report['failures'].append({'visualFeatures':features})
-        window.evaluate_js("S.state='ready';S.speaking=false;S.agent={activity:'thinking',producing:true};S.bubble=null;S.visible=true;hovering=false;document.body.classList.remove('hover');render();")
+        window.evaluate_js("S.state='ready';S.speaking=false;S.voiceOn=false;S.agent={activity:'thinking',producing:true};S.bubble=null;S.visible=true;hovering=false;document.body.classList.remove('hover');render();")
         time.sleep(.6)
         capture('orb-thinking-trail')
-        shader = window.evaluate_js("({thinking:gl.getUniform(prog,U.uThinking),trail:gl.getUniform(prog,U.uBusy),particles:[...pctx.getImageData(0,0,parts.width,parts.height).data].filter((v,i)=>i%4===3&&v>35).length,linked:gl.getProgramParameter(prog,gl.LINK_STATUS),error:gl.getError()})")
+        shader = window.evaluate_js("({thinking:gl.getUniform(prog,U.uThinking),trail:gl.getUniform(prog,U.uBusy),particles:[...pctx.getImageData(0,0,parts.width,parts.height).data].filter((v,i)=>i%4===3&&v>35).length,linked:gl.getProgramParameter(prog,gl.LINK_STATUS),off:gl.getUniform(prog,U.uOff),labelBright:getComputedStyle(cap).color==='rgb(208, 245, 255)',error:gl.getError()})")
         glow=window.evaluate_js("""(()=>{
           const blue=gl.getUniform(prog,U.uB),center=gl.getUniform(prog,U.uCenter),radius=gl.getUniform(prog,U.uR),pixel=new Uint8Array(4);
           gl.drawArrays(gl.TRIANGLE_STRIP,0,4);
@@ -517,7 +517,7 @@ def run():
         time.sleep(.4)
         calm['stableRadius'] = window.evaluate_js('gl.getUniform(prog,U.uR)')==calm['radius']
         report['shaderVisuals']={'shader':shader,'calm':calm}
-        if (shader['thinking']!=1 or shader['trail']!=0 or shader['particles']<20 or not shader['linked'] or not shader['approval'] or shader['error']
+        if (shader['thinking']!=1 or shader['trail']!=0 or shader['particles']<20 or not shader['linked'] or not shader['approval'] or shader['off']>.05 or not shader['labelBright'] or shader['error']
                 or any(calm[k]!=0 for k in ('time','flow','trail')) or not calm['particlesClear'] or not calm['stableRadius']):
             report['failures'].append({'shaderVisuals':report['shaderVisuals']})
         resize(340,214)
@@ -559,6 +559,39 @@ def run():
             window.evaluate_js('applyExpanded(false);')
             if appearance.get('missing') or appearance.get('bad') or not appearance.get('open') or not appearance.get('named'):
                 report['failures'].append({'appearance':appearance})
+        resize(340,480)
+        window.evaluate_js("S.state='ready';S.agent={activity:'idle'};S.speaking=false;S.voiceOn=true;S.visible=true;S.bubble=null;S.review=null;S.expanded=false;S.dock=false;S.reducedMotion=false;applyExpanded(false);render();")
+        time.sleep(1)
+        window.evaluate_js("""window.qaReadIdle=()=>{
+          const r=gl.getUniform(prog,U.uR),c=gl.getUniform(prog,U.uCenter),size=Math.floor(r*1.2),pixels=new Uint8Array(size*size*4);
+          gl.drawArrays(gl.TRIANGLE_STRIP,0,4);gl.readPixels(Math.floor(c[0]-size/2),Math.floor(c[1]-size/2),size,size,gl.RGBA,gl.UNSIGNED_BYTE,pixels);
+          return pixels;
+        };window.qaIdleFrame=qaReadIdle();window.qaIdleFlow=gl.getUniform(prog,U.uFlow);""")
+        time.sleep(.35)
+        idle=window.evaluate_js("""(()=>{
+          const after=qaReadIdle();let delta=0;for(let i=0;i<Math.min(after.length,qaIdleFrame.length);i++)if(i%4!==3)delta+=Math.abs(after[i]-qaIdleFrame[i]);
+          const average=delta/(Math.min(after.length,qaIdleFrame.length)*.75);
+          return {idle:gl.getUniform(prog,U.uIdle)===1,flowing:gl.getUniform(prog,U.uFlow)>qaIdleFlow,changed:delta>0,subtle:average<12,averageDelta:average};
+        })()""")
+        report['idleMotion']=idle
+        if not all(idle[k] for k in ('idle','flowing','changed','subtle')):report['failures'].append({'idleMotion':idle})
+        stageLayouts=[]
+        for dock,panel in [(False,'card'),(False,'list'),(False,'devices'),(False,'appearance'),(True,'card'),(True,'devices')]:
+            window.evaluate_js("""(()=>{
+              const [dock,panel]=%s;S.dock=dock;S.expanded=true;S.bubble=null;S.review=null;
+              applyExpanded(false);S.expanded=true;applyExpanded(true);render();
+              document.getElementById('list').classList.toggle('open',panel==='list');
+              devicesEl.classList.toggle('open',panel==='devices');document.getElementById('appearance').classList.toggle('open',panel==='appearance');
+            })()""" % json.dumps([dock,panel]))
+            time.sleep(.5)
+            result=window.evaluate_js("""(()=>{
+              const bad=[];for(const r of currentHitRegions())if(r.x<0||r.y<0||r.x+r.width>innerWidth||r.y+r.height>innerHeight)bad.push(r.id);
+              return {bad,cardVisible:getComputedStyle(card).visibility==='visible',width:innerWidth,height:innerHeight};
+            })()""")
+            result.update(dock=dock,panel=panel);stageLayouts.append(result)
+            if result['bad'] or not result['cardVisible']:report['failures'].append({'fixedSurfaceLayout':result})
+        report['fixedSurfaceLayouts']=stageLayouts
+        window.evaluate_js('S.expanded=false;applyExpanded(false);S.dock=false;render();')
         # A light desktop exposes any shadow abruptly clipped at a transparent window edge.
         resize(340,300)
         window.evaluate_js("""S.dock=false;S.expanded=false;S.review=null;S.highContrast=false;S.reducedMotion=false;
@@ -576,7 +609,7 @@ def run():
         # Exercise the real native placement code on this isolated QA window, without input.
         from t3_voice import Engine,MONITORINFO,CARD,COMPACT
         native=Engine.__new__(Engine)
-        native.hwnd=window.native.Handle.ToInt32();native.size=None;native.orb_anchor=None
+        native.hwnd=window.native.Handle.ToInt32();native.size=None;native.orb_anchor=None;native.native_placement=None;native.hit_rects=None;native.meta={};native.lock=threading.RLock();native.dock=False
         area=MONITORINFO();area.size=ctypes.sizeof(area)
         user32.MonitorFromWindow.argtypes=[ctypes.wintypes.HWND,ctypes.c_uint]
         user32.MonitorFromWindow.restype=ctypes.wintypes.HMONITOR
@@ -590,12 +623,25 @@ def run():
             for size in (CARD,COMPACT):
                 native.place(size)
                 rect=ctypes.wintypes.RECT();user32.GetWindowRect(native.hwnd,ctypes.byref(rect))
-                positions.append(((rect.left+rect.right)/2,rect.bottom))
+                positions.append(((rect.left+rect.right)/2,rect.bottom,rect.right-rect.left,rect.bottom-rect.top))
         nativeGeometry={'centreDrift':max(p[0] for p in positions)-min(p[0] for p in positions),
-                        'bottomDrift':max(p[1] for p in positions)-min(p[1] for p in positions),'resizes':len(positions)}
+                        'bottomDrift':max(p[1] for p in positions)-min(p[1] for p in positions),'transitions':len(positions),'nativeChanges':native.meta.get('nativeGeometryChanges',0),'surfaceSizes':len({(p[2],p[3]) for p in positions})}
         report['nativeGeometry']=nativeGeometry
-        if nativeGeometry['centreDrift']>.5 or nativeGeometry['bottomDrift']>0:
+        if nativeGeometry['centreDrift']>.5 or nativeGeometry['bottomDrift']>0 or nativeGeometry['nativeChanges']!=1 or nativeGeometry['surfaceSizes']!=1:
             report['failures'].append({'nativeGeometry':nativeGeometry})
+        from t3_voice import gdi32
+        w,h=native.viewport_target
+        native.set_hit_regions([{'id':'orbwrap','x':(w-180)/2,'y':h-150,'width':180,'height':150}])
+        probe=gdi32.CreateRectRgn(0,0,0,0)
+        try:
+            user32.GetWindowRgn.argtypes=[ctypes.wintypes.HWND,ctypes.wintypes.HANDLE]
+            gdi32.PtInRegion.argtypes=[ctypes.wintypes.HANDLE,ctypes.c_int,ctypes.c_int]
+            regionType=user32.GetWindowRgn(native.hwnd,probe)
+            shape={'valid':regionType>0,'emptySpaceExcluded':not bool(gdi32.PtInRegion(probe,5,5)),
+                   'orbIncluded':bool(gdi32.PtInRegion(probe,round(w*scale/2),round((h-66)*scale)))}
+            report['nativeSurfaceShape']=shape
+            if not all(shape.values()):report['failures'].append({'nativeSurfaceShape':shape})
+        finally:gdi32.DeleteObject(probe)
     except Exception as exc:
         report['failures'].append({'error':repr(exc)})
     finally:

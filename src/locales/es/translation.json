@@ -2056,7 +2056,11 @@
         "linuxPttSetupNote": "Después de ejecutar el comando, cierra sesión y vuelve a iniciarla.",
         "hyprlandConfigWriteWarningTitle": "Los atajos de Hyprland no se conservarán",
         "hyprlandConfigWriteWarningDescription": "OpenWhispr no puede escribir en {{path}}, así que los atajos no sobrevivirán a una recarga de la configuración de Hyprland. Asegúrate de que el archivo exista y se pueda escribir.",
-        "hyprlandUnbindDescription": "En Hyprland, OpenWhispr reserva el atajo seleccionado. Cualquier atajo existente de Hyprland que use la misma combinación de teclas se desvinculará cuando OpenWhispr registre su atajo."
+        "hyprlandUnbindDescription": "En Hyprland, OpenWhispr reserva el atajo seleccionado. Cualquier atajo existente de Hyprland que use la misma combinación de teclas se desvinculará cuando OpenWhispr registre su atajo.",
+        "mousePassThrough": {
+          "title": "Keep the mouse button's normal action",
+          "description": "Off: the bound side button only controls dictation, so apps never see its Back or Forward action. On: the button also does what it normally does."
+        }
       },
       "meetingHotkey": {
         "title": "Atajo modo reunión",
@@ -3649,7 +3653,13 @@
     "emptyTitle": "Añade palabras a tu diccionario",
     "emptyDescription": "Añade palabras que {{agentName}} siempre debe reconocer: nombres, herramientas, siglas.",
     "addFirstWord": "Añade tu primera palabra",
-    "agentDefault": "Añadido por defecto"
+    "agentDefault": "Añadido por defecto",
+    "aliases": {
+      "add": "heard as…",
+      "placeholder": "What it sounded like, e.g. sunk it",
+      "remove": "Remove alias {{alias}}",
+      "hint": "Aliases replace the misheard words with this spelling after transcription."
+    }
   },
   "insights": {
     "title": "Estadísticas",
@@ -5166,6 +5176,50 @@
       "bootstrapUnreadable": "OpenWhispr no puede leer el archivo de arranque. Pide a TI que tu cuenta pueda leerlo.",
       "bootstrapMismatch": "El archivo de arranque no coincide con tu cuenta, este espacio de trabajo o sus credenciales configuradas.",
       "testLinkOtherWorkspace": "Este enlace de prueba es para otro espacio de trabajo. Cambia a ese espacio de trabajo y vuelve a abrir el enlace."
+    }
+  },
+  "dictationApp": {
+    "title": "Dictation",
+    "subtitle": "Speak into any application. Everything runs on this computer.",
+    "openSettings": "Settings",
+    "ready": "Ready to dictate",
+    "pressPrefix": "Press",
+    "pressSuffix": "to dictate.",
+    "insertedHint": "Your words are inserted at the cursor. The floating indicator shows recording and processing status; if the target field cannot be verified, the text is copied to the clipboard instead.",
+    "microphone": "Microphone",
+    "keyboardMouse": "Keyboard & mouse",
+    "speechModel": "Speech model",
+    "cleanupModel": "Cleanup model",
+    "dictionary": "Dictionary",
+    "backToDictation": "Back to dictation",
+    "loadingDictionary": "Loading dictionary…",
+    "loading": "Loading dictation…",
+    "latest": "Latest dictation",
+    "copy": "Copy",
+    "copied": "Copied",
+    "historyError": "Could not load dictation history.",
+    "emptyHistory": "Your latest dictation will appear here.",
+    "correction": {
+      "edit": "Fix spelling",
+      "editHint": "Correct any misheard words below, then review the suggestions. Only this text is read; nothing is collected from other apps.",
+      "suggest": "Suggest dictionary words",
+      "cancel": "Cancel",
+      "none": "No spelling corrections were found in your edit.",
+      "proposeTitle": "Add these words to your dictionary?",
+      "proposeDescription": "Checked words are added as preferred spellings. Add \"heard as\" aliases so the misheard form is replaced automatically next time.",
+      "alsoAlias": "Also replace “{{heard}}” with it",
+      "addSelected": "Add selected",
+      "added": "Added {{count}} word(s) to your dictionary.",
+      "undo": "Undo"
+    },
+    "unverifiedPaste": {
+      "title": "Transcript ready to paste",
+      "description": "The target field could not be verified (for example a password field or a changed window), so nothing was typed. The transcript is on your clipboard; paste it manually.",
+      "descriptionClipboardFailed": "The target field could not be verified, so nothing was typed. Copy the transcript below and paste it manually."
+    },
+    "settings": {
+      "localOnlyDescription": "This app only transcribes on this device. Select local transcription to use an installed model.",
+      "useLocalTranscription": "Use local transcription"
     }
   }
 }

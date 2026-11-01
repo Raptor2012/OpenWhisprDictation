@@ -1,0 +1,554 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  :root { --fg:#f2f3f7; --muted:#a3a9b6; --glass:rgba(20,21,27,.84); --line:rgba(255,255,255,.09);
+          --spring:cubic-bezier(.34,1.46,.64,1); --soft:cubic-bezier(.22,1,.36,1); }
+  html, body { margin:0; height:100%; background:transparent; overflow:hidden; font-family:"Segoe UI Variable Text","Segoe UI",system-ui,sans-serif; color:var(--fg); user-select:none; -webkit-user-select:none; }
+  #stage { position:absolute; inset:0; }
+  #orbwrap { position:absolute; left:50%; bottom:0; width:180px; height:150px; margin-left:-90px; }
+  #orb { position:absolute; inset:0; cursor:pointer; }
+  #cap { position:absolute; left:0; right:0; bottom:14px; text-align:center; font-size:11.5px; letter-spacing:.3px; color:var(--muted); overflow:hidden; text-overflow:ellipsis;
+         text-shadow:0 1px 6px rgba(0,0,0,.65); opacity:0; transform:translateY(5px); transition:opacity .35s var(--soft), transform .5s var(--spring); pointer-events:none; white-space:nowrap; }
+  #cap.show { opacity:1; transform:none; }
+
+  /* hover controls */
+  .ctl { position:absolute; top:70px; width:28px; height:28px; border-radius:50%; display:flex; align-items:center; justify-content:center;
+         background:rgba(24,25,31,.82); border:1px solid rgba(255,255,255,.12); box-shadow:0 4px 14px rgba(0,0,0,.4); backdrop-filter:blur(10px);
+         opacity:0; transform:scale(.4); pointer-events:none; cursor:pointer; transition:opacity .2s var(--soft), transform .45s var(--spring), background .15s; }
+  #muteMic { left:16px; } #muteMaeve { right:16px; }
+  body.hover .ctl { opacity:1; transform:none; pointer-events:auto; }
+  body.hover #muteMaeve { transition-delay:.04s; }
+  .ctl:hover { background:rgba(44,46,56,.92); }
+  .ctl:active { transform:scale(.88); }
+  .ctl svg { width:15px; height:15px; stroke:#e9ebf1; fill:none; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round; }
+  .ctl .slash { opacity:0; transition:opacity .15s; }
+  .ctl.muted { background:rgba(120,30,38,.85); border-color:rgba(255,120,120,.4); }
+  .ctl.muted .slash { opacity:1; }
+  /* small persistent badge when something is muted and the controls are hidden */
+  #badge { position:absolute; left:50%; top:94px; margin-left:20px; font-size:9.5px; color:#ffb4b4; opacity:0; transition:opacity .3s; pointer-events:none; text-shadow:0 1px 4px rgba(0,0,0,.7); }
+  #badge.show { opacity:1; }
+  body.hover #badge { opacity:0; }
+
+  /* speech bubble (T3 minimized) */
+  #bubble { position:absolute; left:50%; bottom:112px; width:300px; margin-left:-150px; box-sizing:border-box;
+            background:var(--glass); backdrop-filter:blur(20px) saturate(1.35); border:1px solid var(--line); border-radius:18px;
+            padding:9px 13px 10px; box-shadow:0 14px 40px rgba(0,0,0,.45);
+            opacity:0; transform:translateY(10px) scale(.92); transform-origin:50% 100%; transition:opacity .22s var(--soft), transform .5s var(--spring); pointer-events:none; }
+  #bubble.show { opacity:1; transform:none; pointer-events:auto; }
+  #bubble::after { content:""; position:absolute; left:50%; bottom:-6px; width:12px; height:12px; margin-left:-6px; background:rgba(20,21,27,.92);
+                   border-right:1px solid var(--line); border-bottom:1px solid var(--line); transform:rotate(45deg); border-radius:0 0 3px 0; }
+  #who { font-size:10px; letter-spacing:.6px; text-transform:uppercase; color:#c4a8ff; margin-bottom:3px; }
+  #bubble.you #who { color:#ffcf8a; }
+  #btext { font-size:13px; line-height:1.45; max-height:113px; overflow:hidden; white-space:pre-wrap; overflow-wrap:anywhere;
+           -webkit-mask-image:linear-gradient(to bottom, transparent 0, #000 14px); mask-image:linear-gradient(to bottom, transparent 0, #000 14px); }
+  #btext.short { -webkit-mask-image:none; mask-image:none; }
+  #bubble.you #btext { color:#d9dce3; }
+  #btext .fresh { animation:ink .5s var(--soft); }
+  @keyframes ink { from { opacity:0; filter:blur(3px); } to { opacity:1; filter:none; } }
+
+  /* minimize chip (orb mode, on hover) */
+  #toBar { position:absolute; left:118px; top:36px; width:22px; height:22px; border-radius:50%; display:flex; align-items:center; justify-content:center;
+           background:rgba(24,25,31,.82); border:1px solid rgba(255,255,255,.12); cursor:pointer; opacity:0; transform:scale(.4); pointer-events:none;
+           transition:opacity .2s var(--soft), transform .45s var(--spring), background .15s; transition-delay:.08s; }
+  body.hover #toBar { opacity:1; transform:none; pointer-events:auto; }
+  #toBar:hover { background:rgba(44,46,56,.92); }
+  #toBar svg { width:12px; height:12px; stroke:#e9ebf1; fill:none; stroke-width:2; stroke-linecap:round; }
+
+  /* toolbar (minimized) */
+  #bar { position:absolute; left:50%; bottom:4px; width:196px; height:40px; margin-left:-98px; box-sizing:border-box; border-radius:20px;
+         display:none; align-items:center; gap:4px; padding:0 6px 0 0; background:rgba(18,19,24,.86); border:1px solid rgba(255,255,255,.10);
+         backdrop-filter:blur(18px) saturate(1.3); box-shadow:0 8px 26px rgba(0,0,0,.42); }
+  body.bar #bar { display:flex; animation:barIn .5s var(--spring); }
+  body.bar #orbwrap { display:none; }
+  @keyframes barIn { from { transform:scale(.6); opacity:0; } to { transform:none; opacity:1; } }
+  #barOrb { width:40px; height:40px; flex:none; position:relative; cursor:pointer; }
+  body.bar #orb { inset:auto; left:-8px; top:-8px; }
+  #wave { width:52px; height:24px; flex:none; }
+  .bbtn { width:26px; height:26px; border-radius:50%; flex:none; display:flex; align-items:center; justify-content:center; cursor:pointer;
+          background:rgba(255,255,255,.06); transition:background .15s, transform .35s var(--spring); }
+  .bbtn:hover { background:rgba(255,255,255,.14); }
+  .bbtn:active { transform:scale(.86); }
+  .bbtn svg { width:14px; height:14px; stroke:#e9ebf1; fill:none; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round; }
+  .bbtn .slash { opacity:0; transition:opacity .15s; }
+  .bbtn.muted { background:rgba(120,30,38,.85); }
+  .bbtn.muted .slash { opacity:1; }
+  body.bar #bubble { bottom:56px; }
+  body.bar #card { bottom:54px; max-height:calc(100% - 64px); }
+  body.bar #cap, body.bar #badge { display:none; }
+
+  /* settings card */
+  #card { position:absolute; left:12px; right:12px; bottom:150px; max-height:calc(100% - 160px); background:var(--glass); backdrop-filter:blur(18px) saturate(1.3); border:1px solid var(--line); border-radius:20px; padding:10px 12px 10px; box-sizing:border-box; opacity:0; transform:translateY(14px) scale(.94); transform-origin:50% 100%; transition:opacity .25s ease, transform .45s var(--spring); pointer-events:none; box-shadow:0 12px 40px rgba(0,0,0,.45); }
+  #card.open { opacity:1; transform:none; pointer-events:auto; }
+  #delivery { width:100%; box-sizing:border-box; margin-top:7px; padding:5px 8px; border-radius:9px; border:1px solid var(--line); background:#292b34; color:var(--fg); font:11.5px "Segoe UI",sans-serif; }
+  #review { display:none; position:absolute; left:50%; bottom:112px; width:300px; margin-left:-150px; box-sizing:border-box; padding:11px 13px; border-radius:18px; background:var(--glass); border:1px solid var(--line); backdrop-filter:blur(20px); box-shadow:0 12px 35px rgba(0,0,0,.35); }
+  #review.show { display:block; animation:barIn .35s var(--spring); }
+  body.bar #review { bottom:56px; }
+  #reviewTitle { font-size:10px; color:#c4a8ff; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; margin-bottom:5px; }
+  #reviewText { width:100%; height:70px; resize:none; border:0; outline:none; background:transparent; color:var(--fg); font:13px/1.4 "Segoe UI",sans-serif; box-sizing:border-box; user-select:text; -webkit-user-select:text; }
+  #review .foot { margin-top:5px; }
+  #review button { border:0; border-radius:9px; padding:5px 9px; background:rgba(139,114,255,.25); color:var(--fg); cursor:pointer; }
+  #review button:disabled { opacity:.5; cursor:wait; }
+  [aria-disabled="true"] { pointer-events:none; opacity:.5; }
+  [role="button"]:focus-visible, button:focus-visible, select:focus-visible { outline:2px solid #b9a0ff; outline-offset:3px; }
+  body.reviewing #bubble { display:none; }
+  .thread { display:flex; align-items:center; gap:8px; font-size:12.5px; cursor:pointer; padding:6px 8px; border-radius:10px; }
+  .thread:hover { background:rgba(255,255,255,.06); }
+  .thread .t { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .thread .chev { color:var(--muted); font-size:10px; }
+  #list { display:none; max-height:110px; overflow:auto; margin:4px 0 6px; border-top:1px solid var(--line); border-bottom:1px solid var(--line); }
+  #list.open { display:block; }
+  #list div { padding:6px 8px; font-size:12px; border-radius:8px; cursor:pointer; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  #list div:hover { background:rgba(255,255,255,.08); }
+  .row { display:flex; gap:6px; margin-top:8px; }
+  .pill { flex:1; text-align:center; font-size:11.5px; padding:7px 6px; border-radius:999px; background:rgba(255,255,255,.07); border:1px solid transparent; cursor:pointer; transition:background .15s, border-color .15s, transform .35s var(--spring); white-space:nowrap; }
+  .pill:hover { background:rgba(255,255,255,.12); }
+  .pill:active { transform:scale(.94); }
+  .pill.on { background:rgba(111,141,255,.22); border-color:rgba(111,141,255,.5); }
+  .pill.danger:hover { background:rgba(255,94,94,.22); }
+  .modehint { flex:1; display:flex; align-items:center; justify-content:center; font-size:11px; color:var(--muted); }
+  .foot { display:flex; justify-content:space-between; align-items:center; margin-top:10px; font-size:10.5px; color:var(--muted); }
+  .foot span { cursor:pointer; padding:2px 4px; border-radius:6px; }
+  .foot span:hover { color:var(--fg); background:rgba(255,255,255,.06); }
+  #menu { position:absolute; right:14px; bottom:40px; background:rgba(30,31,38,.97); border:1px solid var(--line); border-radius:12px; padding:6px; display:none; min-width:220px; box-shadow:0 10px 30px rgba(0,0,0,.5); }
+  #menu.open { display:block; }
+  #menu div { padding:7px 10px; font-size:12px; border-radius:8px; cursor:pointer; }
+  #menu div:hover { background:rgba(255,255,255,.08); }
+  #menu div.on::before { content:"✓ "; color:#8fb0ff; }
+  #menu div:not(.on)::before { content:"\2003"; }
+  #detail { font-size:10.5px; color:var(--muted); margin-top:8px; min-height:14px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+</style>
+</head>
+<body>
+<div id="stage">
+  <div id="bubble"><div id="who">Maeve</div><div id="btext"></div></div>
+  <div id="card">
+    <div class="thread" id="threadBtn"><span class="t" id="threadName">Choose a thread</span><span class="chev">▼</span></div>
+    <div id="list"></div>
+    <div class="row">
+      <div class="pill" id="pVoice">Voice off</div>
+      <span class="modehint" id="pMode">Hold to talk</span>
+      <div class="pill danger" id="pStop">Stop</div>
+    </div>
+    <div id="detail"></div>
+    <select id="delivery" title="Choose how your transcript is delivered" aria-label="Transcript delivery">
+      <option value="immediate">Send immediately</option>
+      <option value="review">Review above the orb · Enter to send</option>
+      <option value="composer">Draft in T3 · Enter there to send</option>
+    </select>
+    <div class="foot"><span id="fTest">Test Maeve</span><span id="fMore">Options ⋯</span><span id="fQuit">Quit</span></div>
+    <div id="menu">
+      <div id="mFollow">Follow active T3 thread</div>
+      <div id="mCleanup">Clean up with OpenWhispr's model</div>
+      <div id="mStartup">Start with Windows</div>
+      <div id="mDock">Minimize to toolbar</div>
+    </div>
+  </div>
+  <div id="review">
+    <div id="reviewTitle" aria-live="polite"></div>
+    <textarea id="reviewText" aria-label="Review transcript" placeholder="Review your words…"></textarea>
+    <div class="foot"><span id="reviewCancel">Cancel · Esc</span><span>Shift+Enter: new line</span><button id="reviewSend">Send ↵</button></div>
+  </div>
+  <div id="orbwrap">
+    <canvas id="orb" aria-label="Open settings"></canvas>
+    <div class="ctl" id="muteMic" title="Mute my microphone">
+      <svg viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21"/><path class="slash" d="M4 4l16 16"/></svg>
+    </div>
+    <div class="ctl" id="muteMaeve" title="Mute Maeve">
+      <svg viewBox="0 0 24 24"><path d="M4 9.5h3.5L12 5.5v13l-4.5-4H4z"/><path d="M15.5 9a4 4 0 0 1 0 6M18 6.5a7.5 7.5 0 0 1 0 11"/><path class="slash" d="M4 4l16 16"/></svg>
+    </div>
+    <div id="toBar" title="Minimize to toolbar"><svg viewBox="0 0 24 24"><path d="M5 17h14"/></svg></div>
+    <div id="badge"></div>
+    <div id="cap" role="status" aria-live="polite"></div>
+  </div>
+  <div id="bar">
+    <div id="barOrb" title="Settings"></div>
+    <canvas id="wave"></canvas>
+    <div class="bbtn" id="barMic" title="Mute my microphone">
+      <svg viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21"/><path class="slash" d="M4 4l16 16"/></svg>
+    </div>
+    <div class="bbtn" id="barMaeve" title="Mute Maeve">
+      <svg viewBox="0 0 24 24"><path d="M4 9.5h3.5L12 5.5v13l-4.5-4H4z"/><path d="M15.5 9a4 4 0 0 1 0 6M18 6.5a7.5 7.5 0 0 1 0 11"/><path class="slash" d="M4 4l16 16"/></svg>
+    </div>
+    <div class="bbtn" id="barExpand" title="Expand to orb">
+      <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="6.5"/></svg>
+    </div>
+  </div>
+</div>
+
+<script id="vs" type="x-shader/x-vertex">
+attribute vec2 a; void main(){ gl_Position = vec4(a, 0.0, 1.0); }
+</script>
+<script id="fs" type="x-shader/x-fragment">
+precision highp float;
+uniform vec2 uRes;      // canvas size in device px
+uniform vec2 uCenter;   // orb centre in device px
+uniform float uR;       // orb radius in device px (spring-animated)
+uniform float uTime;
+uniform float uLevel;   // 0..1 spring-animated audio level
+uniform float uGlow;    // 0..1 halo strength
+uniform float uBusy;    // 0..1 busy ring visibility
+uniform float uSpin;    // busy ring angle
+uniform float uArc;     // busy ring arc length
+uniform float uOff;     // 0..1 voice-off desaturation
+uniform vec3 uA, uB, uC; // palette: deep, mid, bright
+uniform float uAppear;  // 0..1 pop-in
+
+vec3 hash3(vec3 p){ p = vec3(dot(p,vec3(127.1,311.7,74.7)), dot(p,vec3(269.5,183.3,246.1)), dot(p,vec3(113.5,271.9,124.6))); return -1.0 + 2.0*fract(sin(p)*43758.5453123); }
+float noise(vec3 p){ vec3 i = floor(p); vec3 f = fract(p); vec3 u = f*f*(3.0-2.0*f);
+  return mix(mix(mix(dot(hash3(i+vec3(0,0,0)),f-vec3(0,0,0)), dot(hash3(i+vec3(1,0,0)),f-vec3(1,0,0)),u.x),
+                 mix(dot(hash3(i+vec3(0,1,0)),f-vec3(0,1,0)), dot(hash3(i+vec3(1,1,0)),f-vec3(1,1,0)),u.x),u.y),
+             mix(mix(dot(hash3(i+vec3(0,0,1)),f-vec3(0,0,1)), dot(hash3(i+vec3(1,0,1)),f-vec3(1,0,1)),u.x),
+                 mix(dot(hash3(i+vec3(0,1,1)),f-vec3(0,1,1)), dot(hash3(i+vec3(1,1,1)),f-vec3(1,1,1)),u.x),u.y),u.z); }
+float fbm(vec3 p){ float v = 0.0, a = 0.5; for (int i=0;i<4;i++){ v += a*noise(p); p = p*2.03 + 7.1; a *= 0.5; } return v; }
+
+void main(){
+  vec2 px = gl_FragCoord.xy;
+  vec2 d = (px - uCenter) / uR;
+  float t = uTime;
+  float ang = atan(d.y, d.x);
+  // fluid silhouette: low-frequency wobble that grows with level
+  float wob = 1.0 + (0.025 + 0.055*uLevel) * fbm(vec3(cos(ang)*1.4, sin(ang)*1.4, t*0.6));
+  float r = length(d) / wob;
+  vec4 col = vec4(0.0);
+
+  // halo
+  float halo = exp(-max(0.0, r - 1.0) * (4.6 - 0.8*uLevel)) * smoothstep(0.98, 1.04, r);
+  vec3 haloCol = mix(uB, uC, 0.4);
+  float haloAlpha = 0.35 * halo * (0.42*uGlow + 0.25*uLevel);
+  col += vec4(haloCol * haloAlpha, haloAlpha);
+
+  // busy ring
+  if (uBusy > 0.001) {
+    float ring = 1.0 - smoothstep(0.0, 0.03, abs(r - 1.24));
+    float a = mod(ang - uSpin, 6.2831853);
+    float seg = smoothstep(0.0, 0.25, a) * (1.0 - smoothstep(uArc-0.35, uArc, a));
+    float ringAlpha = 0.6 * ring * (0.12 + 0.88*seg) * uBusy;
+    col += vec4(uC * ringAlpha, ringAlpha);
+  }
+
+  // sphere
+  if (r < 1.0) {
+    float z = sqrt(max(0.0, 1.0 - r*r));
+    vec3 n = normalize(vec3(d.x/wob, d.y/wob, z));
+    vec3 sp = vec3(n.xy*1.2, z*0.6);
+    vec3 warp = vec3(fbm(sp*0.9 + vec3(0.0, t*0.16, t*0.10)), fbm(sp*0.9 + vec3(5.2, -t*0.12, t*0.08)), 0.0);
+    float f1 = fbm(sp*1.3 + warp*1.6 + vec3(t*0.10, -t*0.07, t*0.12 + 0.15*uLevel));
+    float f2 = fbm(sp*2.0 - warp*1.2 + vec3(-t*0.16, t*0.09, 3.0));
+    float band = smoothstep(-0.35, 0.40, f1 + 0.30*f2);
+    vec3 body = mix(uA, uB, band);
+    body = mix(body, uC, smoothstep(0.20, 0.70, f2 + 0.35*uLevel) * 0.6);
+    // glassy depth: darker toward the limb, brighter core
+    body *= 0.75 + 0.45*z;
+    vec3 L = normalize(vec3(-0.55, 0.75, 0.6));
+    float diff = 0.45 + 0.55*max(0.0, dot(n, L));
+    float fres = pow(1.0 - max(0.0, n.z), 2.6);
+    vec3 V = vec3(0.0,0.0,1.0); vec3 H = normalize(L+V);
+    float spec = pow(max(0.0, dot(n,H)), 120.0) * 0.85 + pow(max(0.0, dot(n,H)), 10.0)*0.22;
+    vec3 c = body*diff + uC*fres*0.7 + vec3(1.0)*spec;
+    c += uC * (0.10 + 0.25*uLevel) * (1.0 - r*r);
+    c += uB * 0.12 * max(0.0, -n.y) * (1.0 - fres);
+    float desat = dot(c, vec3(0.299,0.587,0.114));
+    c = mix(c, vec3(desat)*0.9, uOff*0.75);
+    float edge = 1.0 - smoothstep(0.985, 1.0, r);
+    col = mix(col, vec4(c, 1.0), edge);
+  }
+  float a = clamp(uAppear, 0.0, 1.0);
+  float alpha = clamp(col.a, 0.0, 1.0);
+  float canvasEdge = min(min(px.x, uRes.x-px.x), min(px.y, uRes.y-px.y));
+  float fade = smoothstep(0.0, max(1.0, uR*0.2), canvasEdge);
+  // WebView2 requires premultiplied RGB <= alpha, including the translucent halo.
+  gl_FragColor = vec4(clamp(col.rgb, vec3(0.0), vec3(alpha)), alpha) * a * fade;
+}
+</script>
+
+<script>
+const PAL = {
+  loading:{a:[.20,.21,.26], b:[.42,.44,.52], c:[.72,.74,.80], glow:.25},
+  off:    {a:[.16,.17,.22], b:[.36,.38,.46], c:[.62,.64,.72], glow:.20},
+  ready:  {a:[.02,.30,.34], b:[.10,.70,.62], c:[.55,.98,.85], glow:.55},
+  hearing:{a:[.42,.16,.02], b:[.98,.56,.14], c:[1.0,.86,.50], glow:.95},
+  transcribing:{a:[.08,.14,.46], b:[.30,.46,1.0], c:[.70,.82,1.0], glow:.8},
+  sending:{a:[.08,.14,.46], b:[.30,.46,1.0], c:[.70,.82,1.0], glow:.8},
+  waiting:{a:[.10,.12,.42], b:[.36,.44,.98], c:[.74,.80,1.0], glow:.6},
+  speaking:{a:[.28,.06,.48], b:[.68,.36,1.0], c:[.92,.78,1.0], glow:1.0},
+  reading:{a:[.20,.08,.36], b:[.52,.34,.86], c:[.84,.76,.98], glow:.6},
+  stopped:{a:[.18,.19,.24], b:[.40,.42,.50], c:[.68,.70,.76], glow:.3},
+  dictating:{a:[.10,.30,.52], b:[.52,.84,1.0], c:[.92,.98,1.0], glow:.95},
+  processing:{a:[.04,.28,.40], b:[.24,.72,.86], c:[.70,.96,1.0], glow:.75},
+  reviewing:{a:[.20,.08,.36], b:[.52,.34,.86], c:[.84,.76,.98], glow:.6},
+  done:   {a:[.04,.34,.16], b:[.24,.86,.46], c:[.78,1.0,.84], glow:1.0},
+  failed: {a:[.40,.06,.08], b:[1.0,.30,.32], c:[1.0,.72,.70], glow:.9},
+  error:  {a:[.40,.06,.08], b:[1.0,.30,.32], c:[1.0,.72,.70], glow:.9}
+};
+const LABEL = { loading:'Loading Maeve…', off:'Voice off', ready:'', hearing:'Listening', transcribing:'Transcribing',
+  sending:'Sending', waiting:'Sent', speaking:'', reading:'', stopped:'Stopped', error:'Error',
+  dictating:'Dictating', processing:'Writing…', done:'Done', failed:'Dictation failed' };
+
+// Damped harmonic springs: every motion overshoots a little and settles, Apple style.
+class Spring { constructor(v, k=170, d=18){ this.x=v; this.v=0; this.k=k; this.d=d; this.t=v; }
+  step(dt){ const n = Math.max(1, Math.ceil(dt/0.004)); const h = dt/n; for(let i=0;i<n;i++){ const a = -this.k*(this.x-this.t) - this.d*this.v; this.v += a*h; this.x += this.v*h; } return this.x; } }
+class Spring3 { constructor(v,k,d){ this.s=[new Spring(v[0],k,d),new Spring(v[1],k,d),new Spring(v[2],k,d)]; } set t(v){ this.s[0].t=v[0]; this.s[1].t=v[1]; this.s[2].t=v[2]; } step(dt){ return this.s.map(s=>s.step(dt)); } }
+
+const cv = document.getElementById('orb');
+let W = 180, H = 150, CX = 90, CY = 84, R = 30, barMode = false;
+const dpr = window.devicePixelRatio || 1;
+function layout(bar){
+  barMode = bar;
+  document.body.classList.toggle('bar', bar);
+  if (bar) { W = 56; H = 56; CX = 28; CY = 28; R = 11; document.getElementById('barOrb').appendChild(cv); }
+  else { W = 180; H = 150; CX = 90; CY = 84; R = 30; document.getElementById('orbwrap').prepend(cv); }
+  cv.width = W*dpr; cv.height = H*dpr; cv.style.width = W+'px'; cv.style.height = H+'px';
+}
+layout(false);
+const gl = cv.getContext('webgl', {alpha:true, premultipliedAlpha:true, antialias:true});
+function sh(type, src){ const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s); if(!gl.getShaderParameter(s, gl.COMPILE_STATUS)) console.error(gl.getShaderInfoLog(s)); return s; }
+const prog = gl.createProgram();
+gl.attachShader(prog, sh(gl.VERTEX_SHADER, document.getElementById('vs').textContent));
+gl.attachShader(prog, sh(gl.FRAGMENT_SHADER, document.getElementById('fs').textContent));
+gl.linkProgram(prog); gl.useProgram(prog);
+const buf = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, 1,1]), gl.STATIC_DRAW);
+const aLoc = gl.getAttribLocation(prog, 'a'); gl.enableVertexAttribArray(aLoc); gl.vertexAttribPointer(aLoc, 2, gl.FLOAT, false, 0, 0);
+const U = {}; for (const n of ['uRes','uCenter','uR','uTime','uLevel','uGlow','uBusy','uSpin','uArc','uOff','uA','uB','uC','uAppear']) U[n] = gl.getUniformLocation(prog, n);
+gl.enable(gl.BLEND); gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+
+let S = {state:'loading', text:'', mic:0, out:0, voiceOn:false, mode:'openwhispr', thread:'', threads:[], detail:'', cleanup:false, startup:false,
+         visible:true, micMuted:false, maeveMuted:false, bubble:null};
+const sA = new Spring3(PAL.loading.a, 60, 12), sB = new Spring3(PAL.loading.b, 60, 12), sC = new Spring3(PAL.loading.c, 60, 12);
+const sLevel = new Spring(0, 260, 28);
+const sScale = new Spring(1, 120, 18);
+const sAppear = new Spring(0, 190, 15);   // pop-in with a little overshoot
+const sGlow = new Spring(.25, 50, 10), sBusy = new Spring(0, 80, 12), sOff = new Spring(1, 40, 10);
+let spin = 0, lastT = performance.now(), lastState = '', expanded = false, hovering = false;
+
+function frame(now){
+  const dt = Math.min(0.05, (now - lastT)/1000); lastT = now;
+  const p = PAL[S.state] || PAL.off;
+  sA.t = p.a; sB.t = p.b; sC.t = p.c; sGlow.t = p.glow;
+  const audio = (S.state==='hearing'||S.state==='dictating') ? Math.min(1, S.mic*3.4) : S.state==='speaking' ? Math.min(1, S.out*2.8) :
+                S.state==='reading' ? 0.18 + 0.12*Math.sin(now/260) : 0;
+  sLevel.t = audio;
+  sBusy.t = (S.state==='transcribing'||S.state==='sending'||S.state==='processing') ? 1 : 0;
+  sOff.t = S.voiceOn || ['dictating','processing','done','failed'].includes(S.state) ? 0 : 1;
+  sAppear.t = (S.visible || hovering || expanded || barMode) ? 1 : 0;
+  if (S.state !== lastState) { sScale.v += (S.state==='hearing'||S.state==='speaking'||S.state==='dictating') ? 1.6 : S.state==='done' ? 2.2 : (S.state==='error'||S.state==='failed') ? -1.2 : 0.9; lastState = S.state; }
+  const breathe = 1 + 0.025*Math.sin(now/1100);
+  sScale.t = breathe * (1 + 0.10*sLevel.x);
+  const lvl = sLevel.step(dt), scale = sScale.step(dt), glow = sGlow.step(dt), b = sBusy.step(dt), off = sOff.step(dt);
+  const appear = sAppear.step(dt);
+  const A = sA.step(dt), B = sB.step(dt), C = sC.step(dt);
+  spin += dt * 4.0;
+  gl.viewport(0, 0, cv.width, cv.height);
+  gl.clearColor(0,0,0,0); gl.clear(gl.COLOR_BUFFER_BIT);
+  gl.uniform2f(U.uRes, cv.width, cv.height);
+  gl.uniform2f(U.uCenter, CX*dpr, (H-CY)*dpr);
+  gl.uniform1f(U.uR, R*dpr*scale*(0.35 + 0.65*Math.max(0, appear)));
+  gl.uniform1f(U.uAppear, Math.max(0, Math.min(1, appear)));
+  gl.uniform1f(U.uTime, now/1000);
+  gl.uniform1f(U.uLevel, Math.max(0, lvl));
+  gl.uniform1f(U.uGlow, glow); gl.uniform1f(U.uBusy, b); gl.uniform1f(U.uSpin, spin);
+  gl.uniform1f(U.uArc, 1.4); gl.uniform1f(U.uOff, off);
+  gl.uniform3fv(U.uA, A); gl.uniform3fv(U.uB, B); gl.uniform3fv(U.uC, C);
+  gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+  tickBubble(dt);
+  if (barMode) drawWave(dt, lvl, C);
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+
+// ---------- toolbar waveform: bars spring toward a rolling level history ----------
+const wave = document.getElementById('wave'), wctx = wave.getContext('2d');
+wave.width = 52*dpr; wave.height = 24*dpr;
+const BARS = 11, hist = new Array(BARS).fill(0), bars = Array.from({length:BARS}, ()=> new Spring(0, 320, 18));
+let waveAcc = 0;
+function drawWave(dt, lvl, C){
+  waveAcc += dt;
+  if (waveAcc > 0.06) { waveAcc = 0; hist.shift(); hist.push(Math.max(0, lvl) * (0.6 + 0.4*Math.random())); }
+  const busy = S.state==='processing'||S.state==='transcribing'||S.state==='sending';
+  wctx.clearRect(0, 0, wave.width, wave.height);
+  const col = `rgb(${C.map(v=>Math.round(Math.min(1,v)*255)).join(',')})`;
+  wctx.fillStyle = col;
+  const gap = 52*dpr / BARS, bw = Math.max(2*dpr, gap*0.42), mid = wave.height/2, t = performance.now()/1000;
+  for (let i = 0; i < BARS; i++) {
+    let target = hist[i];
+    if (busy) target = 0.22 + 0.18*Math.sin(t*7 - i*0.7);       // travelling shimmer while working
+    bars[i].t = target; const v = Math.max(0, bars[i].step(dt));
+    const h = Math.max(2.4*dpr, Math.min(wave.height, (0.12 + v*1.6) * wave.height));
+    const x = i*gap + (gap-bw)/2;
+    wctx.globalAlpha = 0.45 + 0.55*Math.min(1, v*3);
+    wctx.beginPath(); wctx.roundRect(x, mid - h/2, bw, h, bw/2); wctx.fill();
+  }
+  wctx.globalAlpha = 1;
+}
+
+// ---------- bubble: typewriter reveal at speaking pace ----------
+const bubbleEl = document.getElementById('bubble'), btext = document.getElementById('btext'), whoEl = document.getElementById('who');
+let bid = null, bwords = [], shown = 0, rendered = -1, freshFrom = 0;
+function tickBubble(dt){
+  const B = S.bubble;
+  if (!B) { bubbleEl.classList.remove('show'); return; }
+  if (B.id !== bid) {
+    bid = B.id; shown = 0; rendered = -1; freshFrom = 0;
+    bubbleEl.classList.toggle('you', B.who === 'you');
+  }
+  setText(whoEl,B.who === 'you' ? 'You' : (S.maeveMuted ? 'Maeve · muted' : 'Maeve'));
+  const words = B.text.split(/\s+/).filter(Boolean);
+  if (words.length < bwords.length) shown = Math.min(shown, words.length);
+  bwords = words;
+  if (B.who === 'you') shown = words.length;
+  else shown = Math.min(words.length, shown + dt * (S.state === 'speaking' || S.state === 'reading' ? 3.0 : 9.0));
+  const n = Math.floor(shown);
+  if (n !== rendered) {
+    btext.textContent = '';
+    const old = document.createTextNode(words.slice(0, Math.max(rendered, 0)).join(' '));
+    btext.appendChild(old);
+    if (n > Math.max(rendered, 0)) {
+      const span = document.createElement('span'); span.className = 'fresh';
+      span.textContent = (rendered > 0 ? ' ' : '') + words.slice(Math.max(rendered, 0), n).join(' ');
+      btext.appendChild(span);
+    }
+    rendered = n;
+    btext.classList.toggle('short', btext.scrollHeight <= btext.clientHeight + 2);
+    btext.scrollTop = btext.scrollHeight;
+  }
+  bubbleEl.classList.add('show');
+}
+
+// ---------- DOM ----------
+const cap = document.getElementById('cap'), card = document.getElementById('card'), badge = document.getElementById('badge');
+const muteMic = document.getElementById('muteMic'), muteMaeve = document.getElementById('muteMaeve');
+const barMic = document.getElementById('barMic'), barMaeve = document.getElementById('barMaeve');
+const reviewEl = document.getElementById('review'), reviewText = document.getElementById('reviewText');
+let reviewId = null;
+function setText(el,value){if(el.textContent!==value)el.textContent=value;}
+function render(){
+  if (S.expanded !== undefined && expanded !== !!S.expanded) applyExpanded(!!S.expanded);
+  document.body.classList.toggle('reviewing', !!S.review);
+  reviewEl.classList.toggle('show', !!S.review);
+  if (S.review && S.review.id !== reviewId) {
+    reviewId = S.review.id;
+    reviewText.value = S.review.text;
+    document.getElementById('reviewTitle').textContent = 'To: ' + (S.review.title || S.threadTitle || 'selected thread');
+    setTimeout(()=>{ if(S.review) { reviewText.focus(); reviewText.setSelectionRange(reviewText.value.length, reviewText.value.length); } }, 80);
+  } else if (!S.review) reviewId = null;
+  if(S.review){
+    document.getElementById('reviewSend').disabled = !!S.review.sending || !reviewText.value.trim();
+    document.getElementById('reviewSend').textContent = S.review.sending ? 'Sending…' : S.review.error ? 'Retry ↵' : 'Send ↵';
+    document.getElementById('reviewCancel').setAttribute('aria-disabled', String(!!S.review.sending));
+    reviewText.readOnly = !!S.review.sending;
+    setText(document.getElementById('reviewTitle'), S.review.error ? 'Send failed · your text is kept' : 'To: ' + (S.review.title || S.threadTitle || 'selected thread'));
+    document.getElementById('reviewTitle').title = S.review.error || S.review.title || '';
+  }
+  document.getElementById('delivery').value = S.delivery || 'immediate';
+  const label = S.text || LABEL[S.state] || '';
+  setText(cap,label);
+  cap.classList.toggle('show', !!label && S.visible && !S.bubble && !hovering && !expanded);
+  muteMic.classList.toggle('muted', S.micMuted);   muteMic.title = S.micMuted ? 'Resume T3 voice input' : 'Pause T3 voice input';
+  muteMaeve.classList.toggle('muted', S.maeveMuted); muteMaeve.title = S.maeveMuted ? 'Unmute Maeve' : 'Mute Maeve';
+  barMic.classList.toggle('muted', S.micMuted); barMic.title = muteMic.title;
+  barMaeve.classList.toggle('muted', S.maeveMuted); barMaeve.title = muteMaeve.title;
+  for(const [el,on] of [[muteMic,S.micMuted],[barMic,S.micMuted],[muteMaeve,S.maeveMuted],[barMaeve,S.maeveMuted]]){
+    el.setAttribute('aria-pressed',String(!!on));el.setAttribute('aria-label',el.title);
+  }
+  if (!!S.dock !== barMode) layout(!!S.dock);
+  document.getElementById('mDock').classList.toggle('on', !!S.dock);
+  badge.textContent = S.micMuted && S.maeveMuted ? 'mic · voice off' : S.micMuted ? 'mic off' : S.maeveMuted ? 'voice off' : '';
+  badge.classList.toggle('show', !!badge.textContent && S.visible);
+  setText(document.getElementById('threadName'),S.threadTitle || 'Choose a thread');
+  document.getElementById('threadBtn').title = (S.followActive ? 'Following T3 · ' : 'Pinned · ') + (S.threadTitle || 'Choose a thread');
+  document.getElementById('barOrb').title = document.getElementById('threadBtn').title;
+  document.getElementById('mFollow').classList.toggle('on', !!S.followActive);
+  const pv = document.getElementById('pVoice'); pv.textContent = S.voiceOn ? 'Voice on' : 'Voice off'; pv.classList.toggle('on', S.voiceOn);
+  setText(document.getElementById('pMode'),'Hold to talk');
+  const dictKey={'MouseButton5':'Mouse Forward','MouseButton4':'Mouse Back'}[S.dictKey] || S.dictKey || 'your dictation key';
+  document.getElementById('pMode').title='Hold '+dictKey+' to dictate; release to finish';
+  setText(document.getElementById('detail'),S.detail || '');
+  document.getElementById('detail').title = S.detail || '';
+  document.getElementById('mCleanup').classList.toggle('on', S.cleanup);
+  document.getElementById('mStartup').classList.toggle('on', S.startup);
+  const list = document.getElementById('list');
+  const threadKeys = JSON.stringify(S.threads);
+  if (list.dataset.n !== threadKeys) {
+    list.innerHTML = ''; list.dataset.n = threadKeys;
+    for (const t of S.threads) { const d = document.createElement('div'); d.textContent = t.title || '(untitled)'; d.title = t.id; d.onclick = (e)=>{ e.stopPropagation(); list.classList.remove('open'); panelExtra(); api('select', t.id); }; list.appendChild(d); }
+  }
+}
+const Q = new URLSearchParams(location.search), DEMO = Q.get('demo');
+function api(name, ...args){ if (!DEMO && window.pywebview) return pywebview.api[name](...args); }
+async function poll(){ try { S = await pywebview.api.poll(); render(); } catch(e){} setTimeout(poll, 50); }
+if (DEMO) {
+  const seq = ['ready','hearing','transcribing','sending','waiting','speaking','reading','off','error','dictating','processing','done','failed'];
+  let i = seq.indexOf(DEMO); if (i < 0) i = 0;
+  S = Object.assign(S, {state:seq[i], voiceOn:true, thread:'x', threadTitle:'Choose a Fast Local Live TTS Model', visible:true,
+       threads:[{id:'x',title:'Choose a Fast Local Live TTS Model'},{id:'y',title:'P13 repo cleanup'}], detail:'Sent 9 words · ASR 280 ms · total 310 ms · voice 40 ms', startup:true,
+       micMuted: !!Q.get('micmuted'), maeveMuted: !!Q.get('maevemuted'), dock: !!Q.get('dock'), hidePill: true});
+  if (Q.get('bubble')) S.bubble = {id:1, who:Q.get('bubble'), new:0, text: Q.get('bubble')==='you' ? 'Can you check why the deploy failed on the Windows runner?' :
+      'I found the cause. The Windows runner pins Node 20, but the lockfile was regenerated with Node 24, so npm ci rejects it. I will pin the runner to Node 24 and rerun the pipeline.'};
+  if (Q.get('hover')) { hovering = true; document.body.classList.add('hover'); }
+  if(!Q.has('static')) setInterval(()=>{ const t = Date.now(); S.mic = .12 + .22*Math.abs(Math.sin(t/95)) * (0.5+0.5*Math.sin(t/700)); S.out = .10 + .22*Math.abs(Math.sin(t/70)) * (0.5+0.5*Math.sin(t/500)); render(); }, 50);
+  if (!seq.includes(DEMO)) setInterval(()=>{ i=(i+1)%seq.length; S.state=seq[i]; S.voiceOn = S.state!=='off'; }, 1800);
+  if (Q.get('card')) { expanded = true; card.classList.add('open'); }
+  if (Q.get('review')) { S.state='reviewing'; S.review={id:1,text:'Please check why the Windows build failed and fix the cause.',title:S.threadTitle}; }
+} else {
+  window.addEventListener('pywebviewready', poll);
+}
+function applyExpanded(v){ expanded=v; card.classList.toggle('open', v); if(!v){document.getElementById('list').classList.remove('open'); document.getElementById('menu').classList.remove('open');} }
+function setExpanded(v){ if (S.review || expanded===v) return; applyExpanded(v); api('set_expanded', v); }
+function panelExtra(){ api('set_panel_extra', document.getElementById('list').classList.contains('open')); }
+function setHover(v){ if (hovering===v) return; hovering = v; document.body.classList.toggle('hover', v); api('set_hover', v); render(); }
+document.getElementById('orbwrap').addEventListener('mouseenter', ()=> setHover(true));
+let choosingDelivery=false;
+document.getElementById('delivery').addEventListener('pointerdown', ()=>{choosingDelivery=true;});
+document.getElementById('delivery').addEventListener('blur', ()=>{choosingDelivery=false;});
+document.body.addEventListener('mouseleave', ()=> { setHover(false); setTimeout(()=>{ if(!document.matches(':hover') && !choosingDelivery) setExpanded(false); }, 400); });
+let dragStart=null;
+cv.addEventListener('pointerdown',e=>{dragStart=[e.screenX,e.screenY];});
+cv.addEventListener('pointercancel',()=>{dragStart=null;});
+cv.addEventListener('click', e=> {const moved=dragStart&&Math.hypot(e.screenX-dragStart[0],e.screenY-dragStart[1])>5;dragStart=null;if(!moved)setExpanded(!expanded);});
+function toggleDock(){ S.dock = !S.dock; setExpanded(false); setHover(false); layout(!!S.dock); api('toggle_dock'); }
+document.getElementById('toBar').addEventListener('click', (e)=>{ e.stopPropagation(); toggleDock(); });
+document.getElementById('barExpand').addEventListener('click', (e)=>{ e.stopPropagation(); toggleDock(); });
+document.getElementById('bar').addEventListener('mouseenter', ()=> setHover(true));
+function toggleMicMute(){S.micMuted=!S.micMuted;render();api('toggle_mic_mute');}
+function toggleMaeveMute(){S.maeveMuted=!S.maeveMuted;render();api('toggle_maeve_mute');}
+barMic.addEventListener('click', (e)=>{ e.stopPropagation(); toggleMicMute(); });
+barMaeve.addEventListener('click', (e)=>{ e.stopPropagation(); toggleMaeveMute(); });
+document.getElementById('mDock').onclick = ()=> { document.getElementById('menu').classList.remove('open'); toggleDock(); };
+document.getElementById('mFollow').onclick = ()=> { document.getElementById('menu').classList.remove('open'); panelExtra(); api('toggle_follow_active'); };
+muteMic.addEventListener('click', (e)=>{ e.stopPropagation(); toggleMicMute(); });
+muteMaeve.addEventListener('click', (e)=>{ e.stopPropagation(); toggleMaeveMute(); });
+document.getElementById('threadBtn').onclick = ()=> { document.getElementById('list').classList.toggle('open'); panelExtra(); };
+document.getElementById('pVoice').onclick = ()=> api('toggle_voice');
+document.getElementById('pStop').onclick = ()=> api('stop');
+document.getElementById('fTest').onclick = ()=> api('test_voice');
+document.getElementById('fQuit').onclick = ()=> api('quit');
+document.getElementById('fMore').onclick = (e)=>{ e.stopPropagation(); document.getElementById('menu').classList.toggle('open'); panelExtra(); };
+function closeMenu(){document.getElementById('menu').classList.remove('open');panelExtra();}
+document.getElementById('mCleanup').onclick = ()=> {closeMenu();api('toggle_cleanup');};
+document.getElementById('mStartup').onclick = ()=> {closeMenu();api('toggle_startup');};
+document.getElementById('delivery').onchange = e=> { choosingDelivery=false; S.delivery=e.target.value; api('set_delivery', S.delivery); };
+reviewText.addEventListener('input', ()=>{ document.getElementById('reviewSend').disabled=!reviewText.value.trim() || !!S.review?.sending; });
+function sendReview(){ if (!S.review || !reviewText.value.trim() || document.getElementById('reviewSend').disabled) return; document.getElementById('reviewSend').disabled=true; api('confirm_review', S.review.id, reviewText.value); }
+document.getElementById('reviewSend').onclick = sendReview;
+document.getElementById('reviewCancel').onclick = ()=> api('cancel_review');
+document.addEventListener('pointerdown',e=>{if(!e.target.closest('#menu,#fMore')&&document.getElementById('menu').classList.contains('open'))closeMenu();});
+for(const el of document.querySelectorAll('.ctl,.bbtn,.pill,#orb,#toBar,#barOrb,#threadBtn,.foot span,#menu div')){
+  el.setAttribute('role','button');el.tabIndex=0;
+  if(el.title)el.setAttribute('aria-label',el.title);
+  el.addEventListener('keydown',e=>{if((e.key==='Enter'||e.key===' ')&&!e.repeat){e.preventDefault();e.stopPropagation();el.click();}});
+}
+// Keep text selection and controls out of pywebview's window-drag handler.
+document.addEventListener('mousedown',e=>{if(e.target.id!=='orb'&&e.target.closest('textarea,input,select,button,[role="button"],#card,#review'))e.stopPropagation();});
+document.addEventListener('keydown', e=>{
+  if (S.review && !e.isComposing && (e.key==='Escape' || (e.key==='Enter' && !e.shiftKey))) {
+    e.preventDefault(); e.stopPropagation();
+    if(e.key==='Enter') sendReview(); else api('cancel_review');
+    return;
+  }
+  if (e.key==='Escape') { if (expanded) setExpanded(false); else api('stop'); }
+});
+</script>
+</body>
+</html>

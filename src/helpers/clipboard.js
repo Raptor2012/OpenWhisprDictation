@@ -1259,13 +1259,24 @@ class ClipboardManager {
   }
 
   async pasteWindows(originalClipboard, options = {}) {
-    const declined = { pasted: false, reason: "target-unverified", restoreComplete: Promise.resolve() };
+    const declined = {
+      pasted: false,
+      reason: "target-unverified",
+      restoreComplete: Promise.resolve(),
+    };
     const binary = this.resolveWindowsFastPasteBinary();
     if (!binary || !options.targetWindow) return declined;
     try {
-      const capability = spawnSync(binary, ["--capabilities"], { windowsHide: true, timeout: 2000, encoding: "utf8" });
-      if (capability.status !== 0 || !String(capability.stdout).includes("safe-paste-v1")) return declined;
-    } catch { return declined; }
+      const capability = spawnSync(binary, ["--capabilities"], {
+        windowsHide: true,
+        timeout: 2000,
+        encoding: "utf8",
+      });
+      if (capability.status !== 0 || !String(capability.stdout).includes("safe-paste-v1"))
+        return declined;
+    } catch {
+      return declined;
+    }
     return this.pasteWithFastPaste(binary, originalClipboard, { ...options, safePaste: true });
   }
 
@@ -1325,7 +1336,11 @@ class ClipboardManager {
               resolve({ restoreComplete: Promise.resolve() });
             }
           } else if (options.safePaste) {
-            resolve({ pasted: false, reason: "target-unverified", restoreComplete: Promise.resolve() });
+            resolve({
+              pasted: false,
+              reason: "target-unverified",
+              restoreComplete: Promise.resolve(),
+            });
           } else {
             this.safeLog(
               `❌ Windows fast-paste failed (code ${code}), falling back to nircmd/PowerShell`,
@@ -1341,7 +1356,11 @@ class ClipboardManager {
           if (hasTimedOut) return;
           clearTimeout(timeoutId);
           if (options.safePaste) {
-            resolve({ pasted: false, reason: "target-unverified", restoreComplete: Promise.resolve() });
+            resolve({
+              pasted: false,
+              reason: "target-unverified",
+              restoreComplete: Promise.resolve(),
+            });
             return;
           }
           this.safeLog("❌ Windows fast-paste error, falling back to nircmd/PowerShell", {
@@ -1357,9 +1376,15 @@ class ClipboardManager {
           killProcess(pasteProcess, "SIGKILL");
           pasteProcess.removeAllListeners();
           if (options.safePaste) {
-            resolve({ pasted: false, reason: "target-unverified", restoreComplete: Promise.resolve() });
+            resolve({
+              pasted: false,
+              reason: "target-unverified",
+              restoreComplete: Promise.resolve(),
+            });
           } else {
-            this.pasteWithNircmdOrPowerShell(originalClipboard, options).then(resolve).catch(reject);
+            this.pasteWithNircmdOrPowerShell(originalClipboard, options)
+              .then(resolve)
+              .catch(reject);
           }
         }, 2000);
       }, PASTE_DELAYS.win32_fast);

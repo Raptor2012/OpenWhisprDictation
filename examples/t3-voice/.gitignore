@@ -1,0 +1,12 @@
+# Local secrets and runtime state. Never commit these.
+t3-voice-token.txt
+t3-voice-settings.json
+t3-voice-status.json
+live-status.json
+*.log
+*.wav
+venv/
+__pycache__/
+t3-voice-prefs.json
+*.png
+runtime/

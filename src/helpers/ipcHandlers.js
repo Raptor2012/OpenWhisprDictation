@@ -12995,7 +12995,10 @@ class IPCHandlers {
 
     this._syncMeetingDetectorPolicy = () => {
       // Dictation mode never starts meeting process or microphone activity monitors.
-      this.meetingDetectionEngine?.setPreferences({ processDetection: false, audioDetection: false });
+      this.meetingDetectionEngine?.setPreferences({
+        processDetection: false,
+        audioDetection: false,
+      });
       // The tray's meeting item follows the same policy.
       this.getTrayManager?.()?.updateTrayMenu?.();
     };

@@ -354,42 +354,42 @@ export default function DictionaryView() {
                       className="group flex flex-col justify-center gap-1 py-2 border-b border-foreground/4 dark:border-white/10 last:border-b-0"
                     >
                       <div className="flex items-center gap-2 h-6">
-                      {isEditing ? (
-                        <Input
-                          dir="auto"
-                          autoFocus
-                          value={editValue}
-                          onChange={(e) => setEditValue(e.target.value)}
-                          onKeyDown={(e) => {
-                            if (e.key === "Enter") commitEdit();
-                            if (e.key === "Escape") setEditingWord(null);
-                          }}
-                          onBlur={commitEdit}
-                          className="h-7 text-xs flex-1"
-                        />
-                      ) : (
-                        <span dir="auto" className="flex-1 text-xs truncate text-foreground/60">
-                          {word}
-                        </span>
-                      )}
-                      {!isEditing && (
-                        <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity duration-150">
-                          <button
-                            onClick={() => startEdit(word)}
-                            aria-label={t("dictionary.editWord", { word })}
-                            className="p-1 text-foreground/45 hover:text-foreground/60 transition-colors"
-                          >
-                            <Pencil size={11} />
-                          </button>
-                          <button
-                            onClick={() => handleRemove(word)}
-                            aria-label={t("dictionary.removeWord", { word })}
-                            className="p-1 text-foreground/45 hover:text-destructive/70 transition-colors"
-                          >
-                            <X size={11} strokeWidth={2} />
-                          </button>
-                        </div>
-                      )}
+                        {isEditing ? (
+                          <Input
+                            dir="auto"
+                            autoFocus
+                            value={editValue}
+                            onChange={(e) => setEditValue(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") commitEdit();
+                              if (e.key === "Escape") setEditingWord(null);
+                            }}
+                            onBlur={commitEdit}
+                            className="h-7 text-xs flex-1"
+                          />
+                        ) : (
+                          <span dir="auto" className="flex-1 text-xs truncate text-foreground/60">
+                            {word}
+                          </span>
+                        )}
+                        {!isEditing && (
+                          <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity duration-150">
+                            <button
+                              onClick={() => startEdit(word)}
+                              aria-label={t("dictionary.editWord", { word })}
+                              className="p-1 text-foreground/45 hover:text-foreground/60 transition-colors"
+                            >
+                              <Pencil size={11} />
+                            </button>
+                            <button
+                              onClick={() => handleRemove(word)}
+                              aria-label={t("dictionary.removeWord", { word })}
+                              className="p-1 text-foreground/45 hover:text-destructive/70 transition-colors"
+                            >
+                              <X size={11} strokeWidth={2} />
+                            </button>
+                          </div>
+                        )}
                       </div>
                       <div className="flex flex-wrap items-center gap-1.5">
                         {aliasesForWord(word, snippets).map((alias) => (

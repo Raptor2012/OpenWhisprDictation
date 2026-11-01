@@ -212,6 +212,7 @@ class Engine:
         self.choosing_delivery = False
         self.expanded_at = 0.0
         self.card_focused = False
+        self.card_close_deadline = None
         self.outside_since = None
         self.window = None
         self.hwnd = None
@@ -508,6 +509,7 @@ class Engine:
                 'dictActivation': self.dict_mode,
                 'followActive': self.follow_active,
                 'expanded': self.expanded, 'hovered': self.hovered,
+                'settingsCloseRequest': self.card_close_deadline or 0,
                 'viewportTarget': list(self.viewport_target),
                 'voiceFx': self.voice_fx,
                 'delivery': self.delivery,
@@ -1288,10 +1290,17 @@ class Engine:
 
     def card_watch(self, now):
         """Close the settings card when the user clicks another window, or leaves it for 2.5 s."""
-        if not (self.expanded and self.hwnd) or self.review or now - self.expanded_at < 0.8:
+        if not (self.expanded and self.hwnd) or self.review:
             return
         if self.choosing_delivery:
+            self.card_close_deadline = None
             self.outside_since = None
+            return
+        if self.card_close_deadline is not None:
+            if now >= self.card_close_deadline:
+                self.set_expanded(False)  # fallback if the page cannot acknowledge its exit
+            return
+        if now - self.expanded_at < .8:
             return
         foreground = user32.GetForegroundWindow()
         ours = foreground == self.hwnd or user32.GetAncestor(foreground, 3) == self.hwnd  # GA_ROOTOWNER
@@ -1303,7 +1312,7 @@ class Engine:
         inside = rect.left <= point.x < rect.right and rect.top <= point.y < rect.bottom
         self.outside_since = None if inside else (self.outside_since or now)
         if (self.card_focused and not ours and not inside) or (self.outside_since and now - self.outside_since > 2.5):
-            self.set_expanded(False)
+            self.card_close_deadline = now + .7
 
     def refresh_hover(self):
         """Recover from missed WebView leave events; transparent window space is not a hover target."""
@@ -1417,6 +1426,7 @@ class Engine:
 
     def set_expanded(self, expanded):
         with self.lock:
+            self.card_close_deadline = None
             if self.hwnd is not None and expanded != self.expanded:
                 if expanded and self.review and self.review.get('sending'):
                     return {'expanded': self.expanded, 'size': list(self.viewport_target)}

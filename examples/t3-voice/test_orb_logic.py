@@ -16,7 +16,7 @@ from live_reader_core import Message
 
 def engine(**fields):
     e = t3_voice.Engine.__new__(t3_voice.Engine)
-    defaults = dict(review_poll_at=0,dictation_started_wall=0,settled_feed_run='',synthesis_done_run='',agent={},visual_events={'sent':0,'interrupt':0},high_contrast=False,reduced_motion=False,choosing_delivery=False, mic_device="", speaker_device="", asr_pending=0, panel_extra=False, review=None, delivery='immediate', follow_active=False, active_thread=None, dock=False, dict_state='', expanded=False, hovered=False, pin_until=0.0, pending=None, state='ready', confirmed=False,
+    defaults = dict(card_close_deadline=None,review_poll_at=0,dictation_started_wall=0,settled_feed_run='',synthesis_done_run='',agent={},visual_events={'sent':0,'interrupt':0},high_contrast=False,reduced_motion=False,choosing_delivery=False, mic_device="", speaker_device="", asr_pending=0, panel_extra=False, review=None, delivery='immediate', follow_active=False, active_thread=None, dock=False, dict_state='', expanded=False, hovered=False, pin_until=0.0, pending=None, state='ready', confirmed=False,
                     sent_at=0.0, error_at=0.0, t3_min=False, bubble=None, bubble_until=0.0, bubble_seq=0,
                     bubble_run=None, silent=deque(), meta={}, dict_preview_text='', dict_preview_until=0,
                     dict_preview_session=0, dict_preview=None, dictating=False, mic_level=0, current=None,
@@ -520,10 +520,14 @@ class CardWatchTests(unittest.TestCase):
         self.watch(foreground=999, cursor_inside=True, focused=True).set_expanded.assert_not_called()
 
     def test_click_on_another_window_closes_it(self):
-        self.watch(foreground=999, cursor_inside=False, focused=True).set_expanded.assert_called_once_with(False)
+        e=self.watch(foreground=999, cursor_inside=False, focused=True)
+        self.assertIsNotNone(e.card_close_deadline)
+        e.set_expanded.assert_not_called()
 
     def test_sustained_pointer_exit_closes_it(self):
-        self.watch(foreground=100, cursor_inside=False, outside_for=3.0).set_expanded.assert_called_once_with(False)
+        e=self.watch(foreground=100, cursor_inside=False, outside_for=3.0)
+        self.assertIsNotNone(e.card_close_deadline)
+        e.set_expanded.assert_not_called()
         self.watch(foreground=100, cursor_inside=False, outside_for=1.0).set_expanded.assert_not_called()
 
 
@@ -734,3 +738,29 @@ class EditedDirectReviewTests(unittest.TestCase):
         with patch.object(t3_voice,'matching_user_submission',side_effect=lambda path,thread,text,since:text=='Corrected text'):
             e.confirm_review(7,'Corrected text')
         self.assertIsNone(e.review);e.dispatch.assert_not_called()
+
+
+class NativeExitHandshakeTests(unittest.TestCase):
+    def test_native_dismissal_requests_page_exit_without_shrinking(self):
+        e=CardWatchTests().watch(foreground=999,cursor_inside=False,focused=True)
+        self.assertIsNotNone(getattr(e,'card_close_deadline',None))
+        e.set_expanded.assert_not_called()
+        self.assertTrue(e.expanded)
+
+    def test_unresponsive_page_has_a_close_deadline(self):
+        e=engine(expanded=True,hwnd=100,expanded_at=0,card_close_deadline=1,outside_since=None,card_focused=False,set_expanded=Mock())
+        e.card_watch(100)
+        e.set_expanded.assert_called_once_with(False)
+
+    def test_reopen_cancels_a_native_close_request(self):
+        e=engine(lock=threading.RLock(),expanded=True,hwnd=100,viewport_target=t3_voice.CARD,card_close_deadline=123)
+        e.set_expanded(True)
+        self.assertIsNone(e.card_close_deadline)
+
+
+class NativeDropdownExitTests(unittest.TestCase):
+    def test_open_dropdown_cancels_a_native_close_request(self):
+        e=engine(expanded=True,hwnd=100,expanded_at=0,card_close_deadline=1,choosing_delivery=True,set_expanded=Mock())
+        e.card_watch(100)
+        self.assertIsNone(e.card_close_deadline)
+        e.set_expanded.assert_not_called()

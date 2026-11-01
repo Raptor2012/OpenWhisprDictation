@@ -354,8 +354,17 @@ def run():
         resize(320,360)
         time.sleep(.25)
         resizeRace['opensAfterResize']=window.evaluate_js("card.classList.contains('open')")
-        window.evaluate_js("setExpanded(false);")
-        time.sleep(.15)
+        window.evaluate_js("""window.qaExitWrites=[];window.qaExitStarted=performance.now();
+          api=async(name,...args)=>{
+            if(name==='set_expanded'){qaExitWrites.push({expanded:args[0],elapsed:performance.now()-qaExitStarted,opacity:Number(getComputedStyle(card).opacity)});return {expanded:args[0],size:[320,360]};}
+            return qaSavedResizeApi(name,...args);
+          };setExpanded(false);""")
+        time.sleep(.04)
+        exitAnimation=window.evaluate_js("({fading:getComputedStyle(card).visibility==='visible'&&Number(getComputedStyle(card).opacity)>0,heldSize:qaExitWrites.length===0,opacity:Number(getComputedStyle(card).opacity)})")
+        time.sleep(.20)
+        exitAnimation.update(window.evaluate_js("({hidden:getComputedStyle(card).visibility==='hidden',closedAfterFade:qaExitWrites.some(w=>!w.expanded&&w.elapsed>=100&&w.opacity<=.01)})"))
+        report['settingsExit']=exitAnimation
+        if not all(exitAnimation[k] for k in ('fading','heldSize','hidden','closedAfterFade')):report['failures'].append({'settingsExit':exitAnimation})
         rapid=window.evaluate_js("""(()=>{
           if(typeof toggleSettings!=='function')return false;
           toggleSettings();toggleSettings();return !wantExpanded&&!card.classList.contains('open');
@@ -385,6 +394,34 @@ def run():
           if(!closed)setExpanded(false);
           return closed;
         })()""")
+        window.evaluate_js('setExpanded(true);')
+        time.sleep(.28)
+        window.evaluate_js('qaExitWrites=[];setExpanded(false);')
+        time.sleep(.04)
+        window.evaluate_js('setExpanded(true);')
+        time.sleep(.12)
+        reversal=window.evaluate_js("({reversedInPlace:wantExpanded&&expanded&&card.classList.contains('open')&&Number(getComputedStyle(card).opacity)>.1,noShrink:!qaExitWrites.some(w=>!w.expanded)})")
+        report['exitReversal']=reversal
+        if not all(reversal.values()):report['failures'].append({'exitReversal':reversal})
+        window.evaluate_js('setExpanded(false);')
+        time.sleep(.22)
+        window.evaluate_js('S.reducedMotion=true;render();setExpanded(true);')
+        time.sleep(.06)
+        window.evaluate_js('qaExitWrites=[];qaExitStarted=performance.now();setExpanded(false);')
+        time.sleep(.05)
+        instant=window.evaluate_js("getComputedStyle(card).visibility==='hidden'&&qaExitWrites.some(w=>!w.expanded&&w.elapsed<80)")
+        report['reducedMotionExit']=instant
+        if not instant:report['failures'].append({'reducedMotionExit':instant})
+        window.evaluate_js('S.reducedMotion=false;render();')
+        window.evaluate_js('setExpanded(true);')
+        time.sleep(.28)
+        window.evaluate_js("qaExitWrites=[];acceptSnapshot({...S,expanded:true,settingsCloseRequest:99},settingsGeneration,false);")
+        time.sleep(.04)
+        nativeExit=window.evaluate_js("({fading:card.classList.contains('closing')&&Number(getComputedStyle(card).opacity)>0,held:!qaExitWrites.some(w=>!w.expanded)})")
+        time.sleep(.22)
+        nativeExit['closedAfterFade']=window.evaluate_js("getComputedStyle(card).visibility==='hidden'&&qaExitWrites.some(w=>!w.expanded&&w.opacity<=.01)")
+        report['nativeSettingsExit']=nativeExit
+        if not all(nativeExit.values()):report['failures'].append({'nativeSettingsExit':nativeExit})
         window.evaluate_js('api=qaSavedResizeApi;')
         report['resizeRace']=resizeRace
         if not all(resizeRace.values()):report['failures'].append({'resizeRace':resizeRace})
@@ -441,7 +478,7 @@ def run():
         window.evaluate_js("S.state='ready';S.speaking=false;S.agent={activity:'thinking',producing:true};S.bubble=null;S.visible=true;hovering=false;document.body.classList.remove('hover');render();")
         time.sleep(.6)
         capture('orb-thinking-trail')
-        shader = window.evaluate_js("({thinking:gl.getUniform(prog,U.uThinking),trail:gl.getUniform(prog,U.uBusy),linked:gl.getProgramParameter(prog,gl.LINK_STATUS),error:gl.getError()})")
+        shader = window.evaluate_js("({thinking:gl.getUniform(prog,U.uThinking),trail:gl.getUniform(prog,U.uBusy),particles:[...pctx.getImageData(0,0,parts.width,parts.height).data].filter((v,i)=>i%4===3&&v>35).length,linked:gl.getProgramParameter(prog,gl.LINK_STATUS),error:gl.getError()})")
         window.evaluate_js("S.agent={activity:'approval',approval:true};render();")
         time.sleep(.5)
         capture('orb-approval-glow')
@@ -457,7 +494,7 @@ def run():
         time.sleep(.4)
         calm['stableRadius'] = window.evaluate_js('gl.getUniform(prog,U.uR)')==calm['radius']
         report['shaderVisuals']={'shader':shader,'calm':calm}
-        if (shader['thinking']!=1 or shader['trail']!=0 or not shader['linked'] or not shader['approval'] or shader['error']
+        if (shader['thinking']!=1 or shader['trail']!=0 or shader['particles']<20 or not shader['linked'] or not shader['approval'] or shader['error']
                 or any(calm[k]!=0 for k in ('time','flow','trail')) or not calm['particlesClear'] or not calm['stableRadius']):
             report['failures'].append({'shaderVisuals':report['shaderVisuals']})
         resize(340,214)

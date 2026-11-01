@@ -115,16 +115,27 @@ class OpenWhisprTests(unittest.TestCase):
 
 class UtteranceTests(unittest.TestCase):
     def test_speech_interrupts_before_silence_submits_once(self):
-        gate = UtteranceGate(start_frames=3, silence_frames=4)
+        gate = UtteranceGate(start_frames=3, silence_frames=4, confirm_frames=5)
         self.assertEqual([], gate.push(b'a', True))
         self.assertEqual([], gate.push(b'b', True))
         self.assertEqual('start', gate.push(b'c', True)[0][0])
+        self.assertEqual([], gate.push(b'd', True))
+        self.assertEqual([('confirm', None)], gate.push(b'e', True))
         for _ in range(3):
             self.assertEqual([], gate.push(b'z', False))
         events = gate.push(b'z', False)
         self.assertEqual('end', events[0][0])
-        self.assertIn(b'abc', events[0][1])
+        self.assertIn(b'abcde', events[0][1])
+        self.assertEqual(5, gate.last_voiced)
         self.assertEqual([], gate.push(b'z', False))
+
+    def test_short_burst_ends_without_confirmation(self):
+        gate = UtteranceGate(start_frames=2, silence_frames=3, confirm_frames=7)
+        gate.push(b'a', True)
+        self.assertEqual('start', gate.push(b'b', True)[0][0])
+        events = gate.push(b'z', False) + gate.push(b'z', False) + gate.push(b'z', False)
+        self.assertEqual(['end'], [k for k, _ in events])
+        self.assertEqual(2, gate.last_voiced)
 
     def test_short_noise_is_not_an_utterance(self):
         gate = UtteranceGate(start_frames=3, silence_frames=4)

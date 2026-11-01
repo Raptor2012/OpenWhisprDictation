@@ -28,7 +28,6 @@ ROOT = Path(__file__).resolve().parent
 DB = Path.home() / '.t3/userdata/statev2.sqlite'
 RATE = 16000
 FRAME = 320  # 20 ms at 16 kHz
-MIN_UTTERANCE_BYTES = int(RATE * 0.35) * 2
 SMALL, LARGE = (180, 150), (320, 296)
 
 
@@ -228,9 +227,12 @@ class Engine:
             if kind == 'start':
                 self.notice.put(('speech-start', None))
                 continue
+            if kind == 'confirm':
+                self.notice.put(('speech-confirmed', None))
+                continue
             ticket = self.routes.ticket()
-            if ticket is None or len(audio) < MIN_UTTERANCE_BYTES:
-                self.notice.put(('discarded', 'too short' if ticket else 'voice off'))
+            if ticket is None or self.gate.last_voiced < self.gate.confirm_frames:
+                self.notice.put(('discarded', 'noise' if ticket else 'voice off'))
                 continue
             self.notice.put(('speech-end', None))
             threading.Thread(target=self.deliver_audio, args=(audio, ticket), daemon=True).start()
@@ -407,10 +409,13 @@ class Engine:
                     self.stop()
                     self.set_state('stopped')
                 elif kind == 'speech-start':
-                    if self.current or not self.jobs.empty():
-                        self.stop()  # barge-in
                     if self.pending:
-                        self.pending['deadline'] = None  # continuation is coming; keep holding
+                        self.pending['deadline'] = None  # continuation may be coming; keep holding
+                    if not self.current and self.jobs.empty():
+                        self.set_state('hearing')
+                elif kind == 'speech-confirmed':
+                    if self.current or not self.jobs.empty():
+                        self.stop()  # barge-in only on real speech, never on a click or a breath
                     self.set_state('hearing')
                 elif kind == 'speech-end':
                     self.set_state('transcribing')

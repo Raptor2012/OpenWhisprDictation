@@ -119,11 +119,14 @@ class StreamingFeed(MessageFeed):
 
 class UtteranceGate:
     """20-ms frames: interrupt on sustained speech; finish after a silence gap."""
-    def __init__(self, start_frames=2, silence_frames=20, max_frames=1500):
+    def __init__(self, start_frames=2, silence_frames=20, max_frames=1500, confirm_frames=7):
         self.start_frames, self.silence_frames, self.max_frames = start_frames, silence_frames, max_frames
+        self.confirm_frames = confirm_frames
         self.pre = deque(maxlen=10)
         self.frames = None
         self.voiced = self.silent = 0
+        self.voiced_total = 0      # voiced frames inside the current utterance
+        self.last_voiced = 0       # voiced frames of the utterance just ended
 
     def push(self, frame, voiced):
         if self.frames is None:
@@ -132,17 +135,24 @@ class UtteranceGate:
             if self.voiced >= self.start_frames:
                 self.frames = list(self.pre)
                 self.silent = 0
+                self.voiced_total = self.voiced
                 return [('start', None)]
             return []
         self.frames.append(frame)
+        events = []
+        if voiced:
+            self.voiced_total += 1
+            if self.voiced_total == self.confirm_frames:
+                events.append(('confirm', None))  # real speech, not a click or a breath
         self.silent = 0 if voiced else self.silent + 1
         if self.silent >= self.silence_frames or len(self.frames) >= self.max_frames:
             audio = b''.join(self.frames)
+            self.last_voiced = self.voiced_total
             self.frames = None
             self.pre.clear()
-            self.voiced = self.silent = 0
-            return [('end', audio)]
-        return []
+            self.voiced = self.silent = self.voiced_total = 0
+            events.append(('end', audio))
+        return events
 
 
 class OpenWhisprFeed:

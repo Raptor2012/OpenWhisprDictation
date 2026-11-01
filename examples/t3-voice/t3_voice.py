@@ -1,13 +1,14 @@
-"""T3 voice panel: hands-free speech in, streaming Maeve speech out, one chosen thread."""
+"""Maeve voice orb for T3 Code: frameless transparent web view, hands-free or OpenWhispr-driven."""
 import argparse
 import ctypes
+import json
+import math
 import os
 from pathlib import Path
 import queue
+import sys
 import threading
 import time
-import tkinter as tk
-from tkinter import ttk
 
 os.environ['HF_HUB_OFFLINE'] = '1'
 os.environ['HF_HUB_DISABLE_TELEMETRY'] = '1'
@@ -15,31 +16,58 @@ import numpy as np
 import ptts
 import sounddevice as sd
 import webrtcvad
+import webview
 
 from diagnostics import write_status
 from live_reader import ContinuousAudio
 from live_reader_core import Message
-from t3_voice_core import Routes, StreamingFeed, UtteranceGate, list_threads, send_message, transcribe
+from t3_voice_core import (OpenWhisprFeed, Routes, StreamingFeed, UtteranceGate, cleanup_text, list_threads,
+                           send_message, transcribe)
 
 ROOT = Path(__file__).resolve().parent
 DB = Path.home() / '.t3/userdata/statev2.sqlite'
 RATE = 16000
 FRAME = 320  # 20 ms at 16 kHz
-MIN_UTTERANCE_BYTES = int(RATE * 0.45) * 2
+MIN_UTTERANCE_BYTES = int(RATE * 0.35) * 2
+SMALL, LARGE = (180, 150), (320, 296)
 
 
-class Panel:
+class Prefs:
+    def __init__(self, path):
+        self.path = Path(path)
+        try:
+            self.data = json.loads(self.path.read_text('utf-8'))
+        except (OSError, ValueError):
+            self.data = {}
+
+    def get(self, key, default=None):
+        return self.data.get(key, default)
+
+    def set(self, key, value):
+        self.data[key] = value
+        temporary = self.path.with_suffix('.tmp')
+        temporary.write_text(json.dumps(self.data, indent=2), 'utf-8')
+        temporary.replace(self.path)
+
+
+def tone(steps, ms=70, volume=0.12):
+    """Short UI cue: a few sine notes, 24 kHz mono int16."""
+    out = []
+    for freq in steps:
+        n = int(24000 * ms / 1000)
+        t = np.arange(n) / 24000
+        env = np.minimum(1, np.minimum(t, (n / 24000) - t) * 120)
+        out.append(np.sin(2 * math.pi * freq * t) * env * volume)
+    return (np.concatenate(out) * 32767).astype('<i2').tobytes()
+
+
+class Engine:
     def __init__(self, thread=None):
         self.routes = Routes(ROOT / 't3-voice-settings.json')
+        self.prefs = Prefs(ROOT / 't3-voice-prefs.json')
         self.threads = list_threads(DB)
-        self.window = tk.Tk()
-        self.window.title('Maeve — T3 voice')
-        self.window.geometry('560x330')
-        self.window.minsize(500, 300)
-        self.status = tk.StringVar(value='Loading Maeve locally…')
-        self.listen_state = tk.StringVar(value='Microphone idle')
-        self.voice_on = tk.BooleanVar(value=False)
-        self.mic_on = tk.BooleanVar(value=True)
+        self.openwhispr = OpenWhisprFeed()
+        self.lock = threading.RLock()
         self.notice = queue.Queue()
         self.jobs = queue.Queue(maxsize=256)
         self.cancel = threading.Event()
@@ -52,98 +80,144 @@ class Panel:
         self.feed = None
         self.thread = None
         self.mic_stream = None
+        self.state = 'loading'
+        self.text = ''
+        self.detail = ''
+        self.mic_level = 0.0
+        self.out_level = 0.0
+        self.mode = self.prefs.get('mode', 'handsfree')
+        self.cleanup = bool(self.prefs.get('cleanup', False))
+        self.window = None
+        self.expanded = False
         self.meta = {'pid': os.getpid(), 'state': 'loading', 'voice': 'Maeve', 'model': 'Phonon 31M',
-                     'asr': 'parakeet-0.6b via sherpa ws:6006', 'mode': 'streaming-sentences',
-                     'chunksSpoken': 0, 'utterancesSent': 0, 'utterancesDiscarded': 0}
-
-        outer = ttk.Frame(self.window, padding=16)
-        outer.pack(fill='both', expand=True)
-        ttk.Label(outer, text='Maeve · T3 voice', font=('Segoe UI', 16, 'bold')).pack(anchor='w')
-        row = ttk.Frame(outer)
-        row.pack(fill='x', pady=(8, 4))
-        ttk.Label(row, text='Thread:').pack(side='left')
-        self.picker = ttk.Combobox(row, state='readonly', width=52,
-                                   values=[self.label(t) for t in self.threads])
-        self.picker.pack(side='left', padx=(6, 0), fill='x', expand=True)
-        self.picker.bind('<<ComboboxSelected>>', lambda _: self.select(self.threads[self.picker.current()]['id']))
-        ttk.Checkbutton(outer, text='Voice on for this thread (speak replies, send what I say)',
-                        variable=self.voice_on, command=self.toggle_voice).pack(anchor='w', pady=(6, 0))
-        ttk.Checkbutton(outer, text='Hands-free microphone (speaking interrupts Maeve)',
-                        variable=self.mic_on, command=self.toggle_mic).pack(anchor='w')
-        ttk.Label(outer, textvariable=self.status, wraplength=510).pack(anchor='w', pady=(10, 0))
-        ttk.Label(outer, textvariable=self.listen_state, wraplength=510, foreground='#1a5fb4').pack(anchor='w', pady=(2, 8))
-        buttons = ttk.Frame(outer)
-        buttons.pack(anchor='w')
-        ttk.Button(buttons, text='Stop', command=self.stop).pack(side='left', padx=(0, 8))
-        ttk.Button(buttons, text='Test Maeve', command=self.test_voice).pack(side='left', padx=(0, 8))
-        ttk.Button(buttons, text='Quit', command=self.close).pack(side='left')
-        ttk.Label(outer, text='Stop: Ctrl+Alt+Space or Escape. Code blocks and tool output are skipped.\n'
-                              'Use headphones: the microphone stays open while Maeve speaks.',
-                  foreground='#555555').pack(anchor='w', pady=(12, 0))
-        self.window.protocol('WM_DELETE_WINDOW', self.close)
-        self.window.bind('<Escape>', lambda _: self.stop())
-
-        initial = thread or next((t['id'] for t in self.threads if self.routes.preferences.get(t['id'])), None)
+                     'asr': 'parakeet-0.6b via sherpa ws:6006', 'chunksSpoken': 0, 'utterancesSent': 0,
+                     'utterancesDiscarded': 0}
+        initial = thread or self.prefs.get('thread') or next(
+            (t['id'] for t in self.threads if self.routes.preferences.get(t['id'])), None)
         if initial is None and self.threads:
             initial = self.threads[0]['id']
         if initial:
             self.select(initial)
         threading.Thread(target=self.synthesize, daemon=True).start()
         threading.Thread(target=self.hotkey, daemon=True).start()
-        self.window.after(60, self.tick)
+        threading.Thread(target=self.loop, daemon=True).start()
 
-    @staticmethod
-    def label(t):
-        return (t['title'] or '(untitled)')[:60] + '  ·  ' + t['id'][:8]
+    # ----- state -----
+    def set_state(self, state, text=''):
+        self.state = state
+        self.text = text
+        self.meta['state'] = state
+
+    def idle_state(self):
+        return 'ready' if self.voice_on() else 'off'
+
+    def voice_on(self):
+        return bool(self.thread and self.routes.preferences.get(self.thread, False))
+
+    def cue(self, steps, ms=70):
+        if self.audio:
+            self.audio.put(tone(steps, ms), self.audio.epoch, threading.Event())
+
+    def snapshot(self):
+        title = next((t['title'] for t in self.threads if t['id'] == self.thread), '')
+        if self.mode == 'openwhispr' and not self.openwhispr.available():
+            hint = 'OpenWhispr history not found. Use hands-free.'
+        elif self.mode == 'openwhispr':
+            hint = "OpenWhispr's hotkey dictates into this thread. Keep T3's composer unfocused."
+        else:
+            hint = self.detail or 'Stop: Ctrl+Alt+M or Esc. Headphones recommended.'
+        return {'state': self.state, 'text': self.text, 'mic': self.mic_level, 'out': self.out_level,
+                'voiceOn': self.voice_on(), 'mode': self.mode, 'thread': self.thread or '', 'threadTitle': title,
+                'threads': [{'id': t['id'], 'title': (t['title'] or '')[:60]} for t in self.threads[:40]],
+                'detail': hint, 'cleanup': self.cleanup, 'startup': self.startup_enabled(),
+                'openwhispr': self.openwhispr.available()}
 
     # ----- routing -----
     def select(self, thread):
-        self.stop()
-        self.thread = thread
-        self.routes.select(thread)
-        self.feed = StreamingFeed(DB, thread)
-        self.voice_on.set(self.routes.preferences.get(thread, False))
-        for index, t in enumerate(self.threads):
-            if t['id'] == thread:
-                self.picker.current(index)
-        self.meta['threadId'] = thread
-        self.status.set(('Listening to this thread.' if self.voice_on.get() else 'Voice is off for this thread.'))
-        self.update_mic()
+        with self.lock:
+            self.stop()
+            self.thread = thread
+            self.routes.select(thread)
+            self.feed = StreamingFeed(DB, thread)
+            self.prefs.set('thread', thread)
+            self.meta['threadId'] = thread
+            self.after_route_change()
 
     def toggle_voice(self):
-        self.stop()
-        self.routes.enable(self.voice_on.get())
-        if self.feed:
+        with self.lock:
+            if not self.thread:
+                return
+            self.stop()
+            self.routes.enable(not self.voice_on())
             self.feed.discard_pending()
-        self.status.set('Listening to this thread.' if self.voice_on.get() else 'Voice is off for this thread.')
+            self.after_route_change()
+            self.cue([660, 880] if self.voice_on() else [440], 60)
+
+    def toggle_mode(self):
+        with self.lock:
+            self.mode = 'openwhispr' if self.mode == 'handsfree' else 'handsfree'
+            self.prefs.set('mode', self.mode)
+            self.openwhispr.cursor = None
+            self.after_route_change()
+
+    def toggle_cleanup(self):
+        self.cleanup = not self.cleanup
+        self.prefs.set('cleanup', self.cleanup)
+
+    def after_route_change(self):
+        self.detail = ''
+        if self.ready:
+            self.set_state(self.idle_state())
         self.update_mic()
 
-    def toggle_mic(self):
-        self.update_mic()
+    # ----- startup -----
+    RUN_KEY = r'Software\Microsoft\Windows\CurrentVersion\Run'
 
+    def startup_command(self):
+        return '"%s" "%s"' % (Path(sys.executable).with_name('pythonw.exe'), ROOT / 't3_voice.py')
+
+    def startup_enabled(self):
+        import winreg
+        try:
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, self.RUN_KEY) as key:
+                return winreg.QueryValueEx(key, 'MaeveT3Voice')[0] == self.startup_command()
+        except OSError:
+            return False
+
+    def toggle_startup(self):
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, self.RUN_KEY, 0, winreg.KEY_SET_VALUE) as key:
+            if self.startup_enabled():
+                try:
+                    winreg.DeleteValue(key, 'MaeveT3Voice')
+                except OSError:
+                    pass
+            else:
+                winreg.SetValueEx(key, 'MaeveT3Voice', 0, winreg.REG_SZ, self.startup_command())
+
+    # ----- speech in -----
     def update_mic(self):
-        want = self.mic_on.get() and self.voice_on.get() and self.ready
+        want = self.ready and self.voice_on() and self.mode == 'handsfree'
         if want and self.mic_stream is None:
-            self.start_mic()
+            self.vad = webrtcvad.Vad(3)
+            self.gate = UtteranceGate(start_frames=2, silence_frames=20)  # 40 ms start, 400 ms end
+            self.mic_stream = sd.RawInputStream(samplerate=RATE, channels=1, dtype='int16',
+                                                blocksize=FRAME, latency='low', callback=self.mic_callback)
+            self.mic_stream.start()
         elif not want and self.mic_stream is not None:
             self.mic_stream.abort()
             self.mic_stream.close()
             self.mic_stream = None
-            self.listen_state.set('Microphone idle')
-
-    # ----- speech in -----
-    def start_mic(self):
-        self.vad = webrtcvad.Vad(2)
-        self.gate = UtteranceGate(start_frames=3, silence_frames=25)  # 60 ms start, 500 ms end
-        self.mic_stream = sd.RawInputStream(samplerate=RATE, channels=1, dtype='int16',
-                                            blocksize=FRAME, latency='low', callback=self.mic_callback)
-        self.mic_stream.start()
-        self.listen_state.set('Microphone open. Speak when ready.')
+            self.mic_level = 0.0
+        if self.mode == 'openwhispr':
+            self.openwhispr.cursor = None  # position on the next poll; never replay history
 
     def mic_callback(self, data, frames, timing, status):
         frame = bytes(data)
         if len(frame) != FRAME * 2:
             return
+        samples = np.frombuffer(frame, dtype='<i2').astype('f4') / 32768
+        self.mic_level = float(np.sqrt(np.mean(samples * samples)))
         try:
             voiced = self.vad.is_speech(frame, RATE)
         except Exception:
@@ -151,24 +225,50 @@ class Panel:
         for kind, audio in self.gate.push(frame, voiced):
             if kind == 'start':
                 self.notice.put(('speech-start', None))
-            else:
-                ticket = self.routes.ticket()
-                if ticket is None or len(audio) < MIN_UTTERANCE_BYTES:
-                    self.notice.put(('discarded', 'too short' if ticket else 'voice off'))
-                    continue
-                self.notice.put(('speech-end', None))
-                threading.Thread(target=self.deliver, args=(audio, ticket), daemon=True).start()
+                continue
+            ticket = self.routes.ticket()
+            if ticket is None or len(audio) < MIN_UTTERANCE_BYTES:
+                self.notice.put(('discarded', 'too short' if ticket else 'voice off'))
+                continue
+            self.notice.put(('speech-end', None))
+            threading.Thread(target=self.deliver_audio, args=(audio, ticket), daemon=True).start()
 
-    def deliver(self, audio, ticket):
+    def deliver_audio(self, audio, ticket):
         started = time.perf_counter()
         try:
             text = transcribe(audio, RATE)
             asr_ms = (time.perf_counter() - started) * 1000
-            if len(text.split()) < 1 or not self.routes.current(ticket):
+            if not text or not self.routes.current(ticket):
                 self.notice.put(('discarded', 'empty' if not text else 'target changed'))
                 return
-            send_message(ticket.thread, text)
-            self.notice.put(('sent', (len(text.split()), asr_ms, (time.perf_counter() - started) * 1000)))
+            if self.cleanup:
+                text = cleanup_text(text)
+            self.deliver_text(text, ticket, asr_ms, started)
+        except Exception as exc:
+            self.notice.put(('send-error', type(exc).__name__ + ': ' + str(exc)[:120]))
+
+    def deliver_text(self, text, ticket, asr_ms, started):
+        self.notice.put(('sending', None))
+        send_message(ticket.thread, text)
+        self.notice.put(('sent', (len(text.split()), asr_ms, (time.perf_counter() - started) * 1000)))
+
+    def forward_openwhispr(self):
+        try:
+            texts = self.openwhispr.poll()
+        except Exception as exc:
+            self.meta['openwhisprError'] = type(exc).__name__
+            return
+        for text in texts:
+            ticket = self.routes.ticket()
+            if ticket is None:
+                continue
+            self.stop()  # a new dictation always interrupts the current reply
+            threading.Thread(target=self._forward, args=(text, ticket), daemon=True).start()
+
+    def _forward(self, text, ticket):
+        started = time.perf_counter()
+        try:
+            self.deliver_text(text, ticket, 0.0, started)
         except Exception as exc:
             self.notice.put(('send-error', type(exc).__name__ + ': ' + str(exc)[:120]))
 
@@ -177,7 +277,7 @@ class Panel:
         held = False
         user32 = ctypes.windll.user32
         while not self.quit.wait(.025):
-            down = all(user32.GetAsyncKeyState(key) & 0x8000 for key in (0x11, 0x12, 0x20))
+            down = all(user32.GetAsyncKeyState(key) & 0x8000 for key in (0x11, 0x12, 0x4D))  # Ctrl+Alt+M
             if down and not held:
                 self.notice.put(('stop', None))
             held = down
@@ -188,7 +288,6 @@ class Panel:
                 self._stop_locked()
         else:
             self._stop_locked()
-        self.meta['state'] = 'stopped'
 
     def _stop_locked(self):
         self.generation += 1
@@ -206,6 +305,7 @@ class Panel:
                 break
         if self.audio:
             self.audio.reset()
+        self.out_level = 0.0
 
     def test_voice(self):
         if self.ready:
@@ -249,19 +349,29 @@ class Panel:
                         if first is None:
                             first = (time.perf_counter() - start) * 1000
                             self.notice.put(('first-audio', first))
-                        pcm = (np.clip(chunk, -1, 1) * 32767).astype('<i2').tobytes()
+                        clipped = np.clip(chunk, -1, 1)
+                        self.out_level = float(np.sqrt(np.mean(clipped * clipped)))
+                        pcm = (clipped * 32767).astype('<i2').tobytes()
                         if not self.audio.put(pcm, epoch, cancel):
                             break
                 self.audio.drain(epoch, cancel)
+                self.out_level = 0.0
                 self.current = None
                 self.notice.put(('done', not cancel.is_set()))
         except Exception as exc:
             self.notice.put(('error', type(exc).__name__ + ': ' + str(exc)))
 
-    # ----- UI loop -----
+    # ----- loop -----
+    def loop(self):
+        while not self.quit.is_set():
+            try:
+                with self.lock:
+                    self.tick()
+            except Exception as exc:
+                self.meta['loopError'] = type(exc).__name__
+            time.sleep(.04)
+
     def tick(self):
-        if self.quit.is_set():
-            return
         try:
             while True:
                 kind, value = self.notice.get_nowait()
@@ -269,64 +379,83 @@ class Panel:
                     self.ready = True
                     if self.feed:
                         self.feed.discard_pending()
-                    self.status.set('Ready.' + ('' if self.voice_on.get() else ' Turn voice on for this thread.'))
-                    self.meta['state'] = 'ready'
+                    self.set_state(self.idle_state())
                     self.update_mic()
+                    self.cue([523, 784], 60)
                 elif kind == 'stop':
                     self.stop()
-                    self.status.set('Stopped.')
+                    self.set_state('stopped')
                 elif kind == 'speech-start':
                     if self.current or not self.jobs.empty():
                         self.stop()  # barge-in
-                    self.listen_state.set('Hearing you…')
+                    self.set_state('hearing')
                 elif kind == 'speech-end':
-                    self.listen_state.set('Transcribing…')
+                    self.set_state('transcribing')
+                elif kind == 'sending':
+                    self.set_state('sending')
                 elif kind == 'discarded':
                     self.meta['utterancesDiscarded'] += 1
-                    self.listen_state.set('Ignored (' + value + '). Microphone open.')
+                    self.set_state(self.idle_state())
                 elif kind == 'sent':
                     words, asr_ms, total_ms = value
                     self.meta['utterancesSent'] += 1
                     self.meta.update(lastAsrMs=asr_ms, lastSendMs=total_ms)
-                    self.listen_state.set('Sent %d words to T3 (ASR %.0f ms, total %.0f ms). Microphone open.' % (words, asr_ms, total_ms))
-                    self.status.set('Waiting for the reply…')
-                    self.meta['state'] = 'waiting'
+                    self.set_state('waiting')
+                    self.detail = 'Sent %d words · ASR %.0f ms · total %.0f ms' % (words, asr_ms, total_ms)
+                    self.cue([784, 1047], 55)
                 elif kind == 'send-error':
-                    self.listen_state.set('Send failed: ' + value)
+                    self.set_state('error', 'Send failed')
+                    self.detail = value[:90]
                     self.meta['lastSendError'] = value
+                    self.cue([220, 180], 90)
                 elif kind == 'speaking':
-                    self.status.set('Maeve is speaking…')
-                    self.meta['state'] = 'speaking'
+                    self.set_state('speaking')
                 elif kind == 'first-audio':
                     self.meta['lastFirstAudioMs'] = value
+                    self.detail = self.detail.split(' · voice')[0] + ' · voice %.0f ms' % value
                 elif kind == 'done':
                     if value:
                         self.meta['chunksSpoken'] += 1
                     if self.jobs.empty():
-                        self.status.set('Listening to this thread.' if self.voice_on.get() else 'Voice is off for this thread.')
-                        self.meta['state'] = 'ready'
+                        self.set_state(self.idle_state())
                 elif kind == 'error':
                     self.ready = False
-                    self.status.set('Reader error: ' + value)
-                    self.meta.update(state='error', error=value)
+                    self.set_state('error', 'Reader error')
+                    self.detail = value[:90]
+                    self.meta['error'] = value
         except queue.Empty:
             pass
         try:
-            if self.ready and self.feed and self.voice_on.get():
+            if self.ready and self.feed and self.voice_on():
                 for message in self.feed.poll():
                     self.last_run = message.run
                     self.jobs.put_nowait((message, self.generation))
+                if self.mode == 'openwhispr' and self.openwhispr.available():
+                    self.forward_openwhispr()
         except queue.Full:
             self.stop()
-            self.status.set('Paused: speech queue filled.')
+            self.set_state('error', 'Speech queue filled')
         except Exception as exc:
-            self.status.set('T3 connection error: ' + type(exc).__name__)
             self.meta['connectionError'] = type(exc).__name__
         self.meta['updatedAt'] = time.time()
+        self.meta['mode'] = self.mode
         if self.audio:
             self.meta.update(playedSamples=self.audio.played_samples, outputUnderflows=self.audio.output_underflows)
         write_status(ROOT / 't3-voice-status.json', self.meta)
-        self.window.after(60, self.tick)
+
+    # ----- window -----
+    def set_expanded(self, expanded):
+        if self.window is None or expanded == self.expanded:
+            return
+        self.expanded = expanded
+        x, y = self.window.x, self.window.y
+        if expanded:
+            self.window.move(x - (LARGE[0] - SMALL[0]) // 2, y - (LARGE[1] - SMALL[1]))
+            self.window.resize(*LARGE)
+        else:
+            self.window.resize(*SMALL)
+            self.window.move(x + (LARGE[0] - SMALL[0]) // 2, y + (LARGE[1] - SMALL[1]))
+            self.prefs.set('pos', [self.window.x, self.window.y])
 
     def close(self):
         self.quit.set()
@@ -338,21 +467,89 @@ class Panel:
             self.audio.close()
         self.meta['state'] = 'closed'
         write_status(ROOT / 't3-voice-status.json', self.meta)
-        self.window.destroy()
+        if self.window is not None:
+            if not self.expanded:
+                self.prefs.set('pos', [self.window.x, self.window.y])
+            self.window.destroy()
 
-    def run(self):
-        self.window.mainloop()
+
+class Api:
+    """Exposed to the page as pywebview.api."""
+    def __init__(self, engine):
+        self._engine = engine
+
+    def poll(self):
+        return self._engine.snapshot()
+
+    def select(self, thread):
+        self._engine.select(thread)
+
+    def toggle_voice(self):
+        self._engine.toggle_voice()
+
+    def toggle_mode(self):
+        self._engine.toggle_mode()
+
+    def toggle_cleanup(self):
+        self._engine.toggle_cleanup()
+
+    def toggle_startup(self):
+        self._engine.toggle_startup()
+
+    def stop(self):
+        self._engine.notice.put(('stop', None))
+
+    def test_voice(self):
+        self._engine.test_voice()
+
+    def set_expanded(self, expanded):
+        self._engine.set_expanded(bool(expanded))
+
+    def quit(self):
+        self._engine.close()
 
 
-if __name__ == '__main__':
+def make_transparent(window):
+    """WebView2 paints transparent; the WinForms host still needs a colour key to let the desktop through."""
+    try:
+        from System.Drawing import Color
+        from System.Windows.Forms import MethodInvoker
+        form = window.native
+
+        def apply():
+            form.BackColor = Color.FromArgb(1, 2, 3)
+            form.TransparencyKey = Color.FromArgb(1, 2, 3)
+        form.BeginInvoke(MethodInvoker(apply))
+        time.sleep(.3)
+        window.resize(*SMALL)
+    except Exception:
+        pass
+
+
+def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--thread', default=None)
     args = parser.parse_args()
+    engine = Engine(args.thread)
+    user32 = ctypes.windll.user32
+    sw, sh = user32.GetSystemMetrics(0), user32.GetSystemMetrics(1)
+    x, y = engine.prefs.get('pos') or [sw - SMALL[0] - 24, sh - SMALL[1] - 70]
+    window = webview.create_window('Maeve', url=str(ROOT / 'ui/orb.html'), js_api=Api(engine),
+                                   width=SMALL[0], height=SMALL[1], x=int(x), y=int(y), frameless=True,
+                                   transparent=True, on_top=True, easy_drag=True, resizable=False,
+                                   min_size=(100, 100), background_color='#010203')
+    engine.window = window
+    window.events.closed += engine.close
+    window.events.shown += lambda: threading.Thread(target=make_transparent, args=(window,), daemon=True).start()
+    webview.start(gui='edgechromium', private_mode=True)
+
+
+if __name__ == '__main__':
     kernel = ctypes.windll.kernel32
     kernel.CreateMutexW.restype = ctypes.c_void_p
     handle = kernel.CreateMutexW(None, True, 'Local\\MaeveT3Voice')
     if kernel.GetLastError() != 183:
         try:
-            Panel(args.thread).run()
+            main()
         finally:
             kernel.CloseHandle(ctypes.c_void_p(handle))

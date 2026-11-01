@@ -1,6 +1,13 @@
-# T3 voice panel (Maeve)
+# Maeve voice orb for T3 Code
 
-Hands-free voice loop for one [T3 Code](https://t3.chat) thread, fully local:
+A small always-on-top orb (frameless, transparent WebView2) that gives one [T3 Code](https://t3.chat) thread a voice, fully local. The orb breathes while listening, glows amber and swells with your voice, spins while transcribing and sending, and pulses violet to Maeve's speech. Click it for the card: thread picker, voice toggle, microphone mode, stop, options.
+
+Two microphone modes:
+
+- **Hands-free** (default): the orb owns the microphone. WebRTC VAD endpoints after 400 ms of silence; speaking again interrupts Maeve.
+- **OpenWhispr hotkey**: dictate with OpenWhispr Dictation's own hotkey. Each completed dictation in OpenWhispr's local history is forwarded to the thread. OpenWhispr also pastes into the focused field, so keep T3's composer unfocused in this mode.
+
+The loop:
 
 1. You speak. WebRTC VAD endpoints the utterance after 500 ms of silence.
 2. OpenWhispr's running Parakeet 0.6B service (sherpa-onnx WebSocket on `127.0.0.1:6006`) transcribes it in about 300 ms.
@@ -25,13 +32,14 @@ venv\Scripts\python pair_t3.py        # one-time: mints a 30-day local MCP token
 "Start Maeve T3 Voice.cmd"            # launches the panel without a console window
 ```
 
-Pick a thread, tick **Voice on for this thread**, and talk. Stop with the button, Escape, or Ctrl+Alt+Space.
+Click the orb, pick a thread, press **Voice on**, and talk. Stop with the Stop pill, Escape, or Ctrl+Alt+M. Options holds **Clean up with OpenWhispr's model** (sends the transcript through OpenWhispr's local llama-server first; costs its cleanup latency) and **Start with Windows**.
 
 ## Files
 
 | File | Role |
 |---|---|
-| `t3_voice.py` | The Tk panel: thread picker, microphone, playback, status file |
+| `t3_voice.py` | Engine (microphone, playback, routing, status file) and the pywebview host |
+| `ui/orb.html` | The orb and card: canvas animation, state palette, controls. Open with `?demo=1` for a design preview |
 | `t3_voice_core.py` | Per-thread routing, streaming sentence feed, utterance gate, MCP sender, ASR client |
 | `live_reader_core.py` | Read-only SQLite feed of T3 messages and Markdown-to-prose cleaning |
 | `live_reader.py` | Earlier reader; the panel reuses its persistent audio device |
@@ -42,5 +50,5 @@ Pick a thread, tick **Voice on for this thread**, and talk. Stop with the button
 
 ## Tuning
 
-- Silence window: `UtteranceGate(start_frames=3, silence_frames=25)` in `t3_voice.py`. 20 ms per frame.
+- Silence window: `UtteranceGate(start_frames=2, silence_frames=20)` in `t3_voice.py`. 20 ms per frame.
 - Shorter than 300 ms starts splitting slow sentences into separate turns, which costs extra model usage.

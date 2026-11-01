@@ -1,0 +1,169 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  :root { --fg:#f2f3f7; --muted:#9aa0ad; --glass:rgba(22,23,28,.78); --line:rgba(255,255,255,.08); }
+  html, body { margin:0; height:100%; background:transparent; overflow:hidden; font-family:"Segoe UI Variable Text","Segoe UI",system-ui,sans-serif; color:var(--fg); user-select:none; -webkit-user-select:none; }
+  #stage { position:absolute; inset:0; }
+  #orb { position:absolute; left:50%; margin-left:-90px; bottom:0; }
+  #cap { position:absolute; left:0; right:0; bottom:18px; text-align:center; font-size:11.5px; letter-spacing:.2px; color:var(--muted); opacity:0; transition:opacity .35s; pointer-events:none; white-space:nowrap; }
+  #cap.show { opacity:1; }
+  #card { position:absolute; left:12px; right:12px; top:10px; bottom:150px; background:var(--glass); backdrop-filter:blur(18px) saturate(1.3); border:1px solid var(--line); border-radius:20px; padding:10px 12px 10px; box-sizing:border-box; opacity:0; transform:translateY(-8px) scale(.98); transition:opacity .22s ease, transform .22s ease; pointer-events:none; box-shadow:0 12px 40px rgba(0,0,0,.45); }
+  #card.open { opacity:1; transform:none; pointer-events:auto; }
+  .thread { display:flex; align-items:center; gap:8px; font-size:12.5px; cursor:pointer; padding:6px 8px; border-radius:10px; }
+  .thread:hover { background:rgba(255,255,255,.06); }
+  .thread .t { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .thread .chev { color:var(--muted); font-size:10px; }
+  #list { display:none; max-height:120px; overflow:auto; margin:4px 0 6px; border-top:1px solid var(--line); border-bottom:1px solid var(--line); }
+  #list.open { display:block; }
+  #list div { padding:6px 8px; font-size:12px; border-radius:8px; cursor:pointer; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  #list div:hover { background:rgba(255,255,255,.08); }
+  .row { display:flex; gap:6px; margin-top:8px; }
+  .pill { flex:1; text-align:center; font-size:11.5px; padding:7px 6px; border-radius:999px; background:rgba(255,255,255,.07); border:1px solid transparent; cursor:pointer; transition:background .15s, border-color .15s; white-space:nowrap; }
+  .pill:hover { background:rgba(255,255,255,.12); }
+  .pill.on { background:rgba(111,141,255,.22); border-color:rgba(111,141,255,.5); }
+  .pill.danger:hover { background:rgba(255,94,94,.22); }
+  .foot { display:flex; justify-content:space-between; align-items:center; margin-top:10px; font-size:10.5px; color:var(--muted); }
+  .foot span { cursor:pointer; padding:2px 4px; border-radius:6px; }
+  .foot span:hover { color:var(--fg); background:rgba(255,255,255,.06); }
+  #menu { position:absolute; right:14px; top:40px; background:rgba(30,31,38,.96); border:1px solid var(--line); border-radius:12px; padding:6px; display:none; min-width:220px; box-shadow:0 10px 30px rgba(0,0,0,.5); }
+  #menu.open { display:block; }
+  #menu div { padding:7px 10px; font-size:12px; border-radius:8px; cursor:pointer; }
+  #menu div:hover { background:rgba(255,255,255,.08); }
+  #menu div.on::before { content:"✓ "; color:#8fb0ff; }
+  #menu div:not(.on)::before { content:"\2003"; }
+  #detail { font-size:10.5px; color:var(--muted); margin-top:8px; min-height:14px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+</style>
+</head>
+<body>
+<div id="stage">
+  <canvas id="orb"></canvas>
+  <div id="cap"></div>
+  <div id="card">
+    <div class="thread" id="threadBtn"><span class="t" id="threadName">Choose a thread</span><span class="chev">▼</span></div>
+    <div id="list"></div>
+    <div class="row">
+      <div class="pill" id="pVoice">Voice off</div>
+      <div class="pill" id="pMode">Hands-free</div>
+      <div class="pill danger" id="pStop">Stop</div>
+    </div>
+    <div id="detail"></div>
+    <div class="foot"><span id="fTest">Test Maeve</span><span id="fMore">Options ⋯</span><span id="fQuit">Quit</span></div>
+    <div id="menu">
+      <div id="mCleanup">Clean up with OpenWhispr's model</div>
+      <div id="mStartup">Start with Windows</div>
+    </div>
+  </div>
+</div>
+<script>
+const PAL = {
+  loading:{c:[110,114,124],glow:.25}, off:{c:[96,101,112],glow:.25}, ready:{c:[58,214,166],glow:.55},
+  hearing:{c:[255,181,71],glow:.9}, transcribing:{c:[111,141,255],glow:.8}, sending:{c:[111,141,255],glow:.8},
+  waiting:{c:[111,141,255],glow:.6}, speaking:{c:[183,132,255],glow:1}, stopped:{c:[120,124,134],glow:.3},
+  error:{c:[255,94,94],glow:.9}
+};
+const LABEL = { loading:'Loading Maeve…', off:'Voice off', ready:'Listening', hearing:'Hearing you', transcribing:'Transcribing',
+  sending:'Sending', waiting:'Thinking…', speaking:'Maeve', stopped:'Stopped', error:'Error' };
+const cv = document.getElementById('orb'), ctx = cv.getContext('2d');
+const W = 180, H = 150, CX = W/2, CY = 66, R = 30;
+let dpr = window.devicePixelRatio || 1;
+cv.width = W*dpr; cv.height = H*dpr; cv.style.width = W+'px'; cv.style.height = H+'px'; ctx.scale(dpr,dpr);
+let S = {state:'loading', text:'', mic:0, out:0, voiceOn:false, mode:'handsfree', thread:'', threads:[], detail:'', cleanup:false, startup:false, openwhispr:true};
+let col = [110,114,124], glow = .25, level = 0, pulse = 0, spin = 0, lastState = '', flash = 0, expanded = false;
+const lerp = (a,b,t)=>a+(b-a)*t;
+function draw(now){
+  const p = PAL[S.state] || PAL.off;
+  for (let i=0;i<3;i++) col[i] = lerp(col[i], p.c[i], .12);
+  glow = lerp(glow, p.glow, .1);
+  const target = S.state==='hearing' ? Math.min(1, S.mic*3.2) : S.state==='speaking' ? Math.min(1, S.out*2.6) : 0;
+  level = lerp(level, target, target>level ? .45 : .12);
+  const breathe = .5 + .5*Math.sin(now/1300);
+  const base = R * (1 + .04*breathe + .22*level);
+  if (flash>0) flash = Math.max(0, flash-.06);
+  ctx.clearRect(0,0,W,H);
+  const rgb = `${col[0]|0},${col[1]|0},${col[2]|0}`;
+  // halo
+  const halo = ctx.createRadialGradient(CX,CY,base*.6, CX,CY, base*2.6);
+  halo.addColorStop(0, `rgba(${rgb},${.42*glow + .25*level})`);
+  halo.addColorStop(1, `rgba(${rgb},0)`);
+  ctx.fillStyle = halo; ctx.beginPath(); ctx.arc(CX,CY,base*2.6,0,Math.PI*2); ctx.fill();
+  // speaking ripples
+  if (S.state==='speaking' || S.state==='hearing') {
+    for (let k=0;k<2;k++){
+      const t = ((now/1100)+k*.5)%1;
+      ctx.strokeStyle = `rgba(${rgb},${(1-t)*.35*(.3+level)})`; ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.arc(CX,CY, base*(1.1+t*1.2), 0, Math.PI*2); ctx.stroke();
+    }
+  }
+  // busy arc
+  if (S.state==='transcribing' || S.state==='sending' || S.state==='waiting') {
+    spin += .09;
+    ctx.strokeStyle = `rgba(${rgb},.9)`; ctx.lineWidth = 2.5; ctx.lineCap='round';
+    ctx.beginPath(); ctx.arc(CX,CY, base+8, spin, spin + (S.state==='waiting'? 2.2 : 1.2)); ctx.stroke();
+    ctx.strokeStyle = `rgba(${rgb},.18)`; ctx.beginPath(); ctx.arc(CX,CY, base+8, 0, Math.PI*2); ctx.stroke();
+  }
+  // orb body
+  const body = ctx.createRadialGradient(CX-base*.35, CY-base*.4, base*.1, CX, CY, base);
+  body.addColorStop(0, `rgba(255,255,255,.95)`);
+  body.addColorStop(.25, `rgba(${rgb},.95)`);
+  body.addColorStop(1, `rgba(${(col[0]*.35)|0},${(col[1]*.35)|0},${(col[2]*.45)|0},1)`);
+  ctx.fillStyle = body; ctx.beginPath(); ctx.arc(CX,CY,base,0,Math.PI*2); ctx.fill();
+  // rim light + flash
+  ctx.strokeStyle = `rgba(255,255,255,${.18 + flash*.6})`; ctx.lineWidth = 1; ctx.beginPath(); ctx.arc(CX,CY,base-.5,0,Math.PI*2); ctx.stroke();
+  // voice off: a quiet inner dot instead of a glyph
+  if (!S.voiceOn) { ctx.fillStyle='rgba(255,255,255,.35)'; ctx.beginPath(); ctx.arc(CX,CY,4,0,Math.PI*2); ctx.fill(); }
+  requestAnimationFrame(draw);
+}
+requestAnimationFrame(draw);
+
+const cap = document.getElementById('cap');
+const card = document.getElementById('card');
+function render(){
+  const label = S.text || LABEL[S.state] || '';
+  cap.textContent = label; cap.classList.toggle('show', !!label && (S.state!=='ready' || expanded));
+  if (S.state!==lastState) { if (S.state==='sending'||S.state==='error') flash = 1; lastState = S.state; }
+  document.getElementById('threadName').textContent = S.threadTitle || 'Choose a thread';
+  const pv = document.getElementById('pVoice'); pv.textContent = S.voiceOn ? 'Voice on' : 'Voice off'; pv.classList.toggle('on', S.voiceOn);
+  document.getElementById('pMode').textContent = S.mode==='handsfree' ? 'Hands-free mic' : 'OpenWhispr hotkey';
+  document.getElementById('detail').textContent = S.detail || '';
+  document.getElementById('mCleanup').classList.toggle('on', S.cleanup);
+  document.getElementById('mStartup').classList.toggle('on', S.startup);
+  const list = document.getElementById('list');
+  if (list.dataset.n !== String(S.threads.length)) {
+    list.innerHTML = ''; list.dataset.n = S.threads.length;
+    for (const t of S.threads) { const d = document.createElement('div'); d.textContent = t.title || '(untitled)'; d.title = t.id; d.onclick = (e)=>{ e.stopPropagation(); list.classList.remove('open'); pywebview.api.select(t.id); }; list.appendChild(d); }
+  }
+}
+async function poll(){ try { S = await pywebview.api.poll(); render(); } catch(e){} setTimeout(poll, 50); }
+const DEMO = new URLSearchParams(location.search).get('demo');
+if (DEMO) {
+  // Design preview without the engine: cycle states with synthetic levels.
+  const seq = ['ready','hearing','transcribing','sending','waiting','speaking','off','error'];
+  let i = seq.indexOf(DEMO); if (i < 0) i = 0;
+  S = {state:seq[i], text:'', mic:0, out:0, voiceOn:true, mode:'handsfree', thread:'x', threadTitle:'Choose a Fast Local Live TTS Model',
+       threads:[{id:'x',title:'Choose a Fast Local Live TTS Model'},{id:'y',title:'P13 repo cleanup'}], detail:'Sent 9 words · ASR 280 ms · total 310 ms · voice 40 ms', cleanup:false, startup:true};
+  setInterval(()=>{ S.mic = .15 + .25*Math.abs(Math.sin(Date.now()/90)); S.out = .12 + .22*Math.abs(Math.sin(Date.now()/70)); render(); }, 50);
+  if (!seq.includes(DEMO)) setInterval(()=>{ i=(i+1)%seq.length; S.state=seq[i]; S.voiceOn = S.state!=='off'; }, 1600);
+  if (new URLSearchParams(location.search).get('card')) { expanded = true; card.classList.add('open'); }
+} else {
+  window.addEventListener('pywebviewready', poll);
+}
+
+function setExpanded(v){ if (expanded===v) return; expanded = v; card.classList.toggle('open', v); if(!v){document.getElementById('list').classList.remove('open'); document.getElementById('menu').classList.remove('open');} pywebview.api.set_expanded(v); }
+cv.addEventListener('click', ()=> setExpanded(!expanded));
+document.addEventListener('mouseleave', ()=> setTimeout(()=>{ if(!document.matches(':hover')) setExpanded(false); }, 400));
+document.getElementById('threadBtn').onclick = ()=> document.getElementById('list').classList.toggle('open');
+document.getElementById('pVoice').onclick = ()=> pywebview.api.toggle_voice();
+document.getElementById('pMode').onclick = ()=> pywebview.api.toggle_mode();
+document.getElementById('pStop').onclick = ()=> pywebview.api.stop();
+document.getElementById('fTest').onclick = ()=> pywebview.api.test_voice();
+document.getElementById('fQuit').onclick = ()=> pywebview.api.quit();
+document.getElementById('fMore').onclick = (e)=>{ e.stopPropagation(); document.getElementById('menu').classList.toggle('open'); };
+document.getElementById('mCleanup').onclick = ()=> pywebview.api.toggle_cleanup();
+document.getElementById('mStartup').onclick = ()=> pywebview.api.toggle_startup();
+document.addEventListener('keydown', e=>{ if (e.key==='Escape') { if (expanded) setExpanded(false); else pywebview.api.stop(); } });
+// drag anywhere on the orb area (pywebview easy_drag handles the window; keep card clicks local)
+</script>
+</body>
+</html>

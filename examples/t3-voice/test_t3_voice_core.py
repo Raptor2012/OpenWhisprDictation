@@ -6,7 +6,7 @@ import unittest
 from unittest.mock import patch
 
 import test_live_reader
-from t3_voice_core import McpSender, Routes, StreamingFeed, UtteranceGate, send_message_cli
+from t3_voice_core import McpSender, OpenWhisprFeed, Routes, StreamingFeed, UtteranceGate, send_message_cli
 
 
 class RouteTests(unittest.TestCase):
@@ -92,6 +92,25 @@ class StreamTests(unittest.TestCase):
         self.add('two', 'Do not restart.', run='run-1')
         self.add('three', 'Next turn.', run='run-2')
         self.assertEqual(['Next turn.'], [m.text for m in feed.poll()])
+
+
+class OpenWhisprTests(unittest.TestCase):
+    def test_only_new_completed_dictations_are_forwarded(self):
+        import sqlite3
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'transcriptions.db'
+            db = sqlite3.connect(path)
+            db.execute("CREATE TABLE transcriptions (id INTEGER PRIMARY KEY AUTOINCREMENT, text TEXT NOT NULL, "
+                       "status TEXT NOT NULL DEFAULT 'completed', deleted_at TEXT)")
+            db.execute("INSERT INTO transcriptions (text) VALUES ('old history')"); db.commit()
+            feed = OpenWhisprFeed(path)
+            self.assertEqual([], feed.poll())  # first poll only positions the cursor
+            db.execute("INSERT INTO transcriptions (text) VALUES ('  Hello Maeve.  ')")
+            db.execute("INSERT INTO transcriptions (text, status) VALUES ('failed one', 'failed')")
+            db.execute("INSERT INTO transcriptions (text, deleted_at) VALUES ('gone', 'x')"); db.commit()
+            self.assertEqual(['Hello Maeve.'], feed.poll())
+            self.assertEqual([], feed.poll())
+            db.close()
 
 
 class UtteranceTests(unittest.TestCase):

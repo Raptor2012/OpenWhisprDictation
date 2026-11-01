@@ -7,3 +7,5 @@ live-status.json
 *.wav
 venv/
 __pycache__/
+t3-voice-prefs.json
+*.png

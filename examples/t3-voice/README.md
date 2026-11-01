@@ -52,3 +52,15 @@ Click the orb, pick a thread, press **Voice on**, and talk. Stop with the Stop p
 
 - Silence window: `UtteranceGate(start_frames=2, silence_frames=20)` in `t3_voice.py`. 20 ms per frame.
 - Shorter than 300 ms starts splitting slow sentences into separate turns, which costs extra model usage.
+
+## Cleanup model benchmark (OpenWhispr Dictation, 2026-11-01)
+
+`bench_cleanup.py` runs OpenWhispr's cleanup prompt over five dictation samples against the app's llama-server (port 8221) and any GGUF paths you pass (each spawned on port 8231 with the bundled Vulkan build). RTX 4070 Laptop, 8 GB VRAM, with a game and the Unity editor also on the GPU:
+
+| Model | Median per cleanup | Notes |
+|---|---|---|
+| gemma-4-E4B q4_0 (previous default) | ~3.2 s | 5 GB weights plus a 16k context left ~0.5 GB VRAM free; everything else spilled to system memory |
+| Qwen3.5-2B Q4_K_M | ~0.45 s | Picked. Same corrections as gemma on 4 of 5 samples; took "new paragraph" literally once |
+| Qwen3.5-0.8B Q4_K_M | ~0.33 s | Rejected: echoed the raw transcript on 3 of 5 samples and invented a sentence once |
+
+Set `LOCAL_CLEANUP_MODEL=qwen3.5-2b-q4_k_m` in `%APPDATA%\OpenWhisprDictation\.env` with the GGUF in `~/.cache/openwhispr/models/`. On an 8 GB card, VRAM headroom matters more than model speed: a model that fits beside your other GPU work beats a bigger one that spills.

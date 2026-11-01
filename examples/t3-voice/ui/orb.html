@@ -217,7 +217,7 @@ void main(){
   float t = uTime;
   float ang = atan(d.y, d.x);
   // fluid silhouette: low-frequency wobble that grows with level
-  float wob = 1.0 + (0.025 + 0.055*uLevel) * fbm(vec3(cos(ang)*1.4, sin(ang)*1.4, t*0.6));
+  float wob = 1.0 + (0.022 + 0.05*uLevel) * fbm(vec3(cos(ang)*1.2, sin(ang)*1.2, t*0.32));
   float r = length(d) / wob;
   vec4 col = vec4(0.0);
 
@@ -325,8 +325,9 @@ gl.enable(gl.BLEND); gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
 let S = {state:'loading', text:'', mic:0, out:0, voiceOn:false, mode:'openwhispr', thread:'', threads:[], detail:'', cleanup:false, startup:false,
          visible:true, micMuted:false, maeveMuted:false, bubble:null};
 const sA = new Spring3(PAL.loading.a, 60, 12), sB = new Spring3(PAL.loading.b, 60, 12), sC = new Spring3(PAL.loading.c, 60, 12);
-const sLevel = new Spring(0, 260, 28);
-const sScale = new Spring(1, 120, 18);
+const sLevel = new Spring(0, 170, 26);
+const sScale = new Spring(1, 90, 17);
+let audioS = 0;   // level smoothed between 20 Hz status polls
 const sAppear = new Spring(0, 190, 15);   // pop-in with a little overshoot
 const sGlow = new Spring(.25, 50, 10), sBusy = new Spring(0, 80, 12), sOff = new Spring(1, 40, 10);
 let spin = 0, lastT = performance.now(), lastState = '', expanded = false, hovering = false;
@@ -340,18 +341,19 @@ function frame(now){
   sA.t = p.a; sB.t = p.b; sC.t = p.c; sGlow.t = p.glow;
   const audio = (state==='hearing'||state==='dictating') ? audioResponse(S.mic) : playbackActive() ? audioResponse(S.out) :
                 state==='reading' ? 0.18 + 0.12*Math.sin(now/260) : 0;
-  sLevel.t = audio;
-  sLevel.k = audio > sLevel.x ? 400 : 110; sLevel.d = audio > sLevel.x ? 36 : 22;
+  audioS += (audio - audioS) * (1 - Math.exp(-dt * (audio > audioS ? 14 : 6)));
+  sLevel.t = audioS;
+  sLevel.k = audioS > sLevel.x ? 170 : 70; sLevel.d = audioS > sLevel.x ? 26 : 17;
   sBusy.t = (state==='transcribing'||state==='sending'||state==='processing') ? 1 : 0;
   sOff.t = S.voiceOn || playbackActive() || ['dictating','processing','done','failed'].includes(state) ? 0 : 1;
   sAppear.t = (S.visible || hovering || expanded || barMode) ? 1 : 0;
-  if (state !== lastState) { sScale.v += (state==='hearing'||state==='speaking'||state==='dictating') ? 1.6 : state==='done' ? 2.2 : (state==='error'||state==='failed') ? -1.2 : 0.9; lastState = state; }
-  const breathe = 1 + 0.025*Math.sin(now/1100);
-  sScale.t = breathe * (1 + 0.18*sLevel.x);
+  if (state !== lastState) { sScale.v += (state==='hearing'||state==='speaking'||state==='dictating') ? 0.8 : state==='done' ? 1.3 : (state==='error'||state==='failed') ? -0.7 : 0.45; lastState = state; }
+  const breathe = 1 + 0.018*Math.sin(now/1700) + 0.006*Math.sin(now/730);
+  sScale.t = breathe * (1 + 0.12*sLevel.x);
   const lvl = sLevel.step(dt), scale = sScale.step(dt), glow = sGlow.step(dt), b = sBusy.step(dt), off = sOff.step(dt);
   const appear = sAppear.step(dt);
   const A = sA.step(dt), B = sB.step(dt), C = sC.step(dt);
-  spin += dt * 4.0;
+  spin += dt * 3.0;
   gl.viewport(0, 0, cv.width, cv.height);
   gl.clearColor(0,0,0,0); gl.clear(gl.COLOR_BUFFER_BIT);
   gl.uniform2f(U.uRes, cv.width, cv.height);
@@ -375,7 +377,8 @@ const wave = document.getElementById('wave'), wctx = wave.getContext('2d');
 wave.width = 52*dpr; wave.height = 24*dpr;
 const orbWave = document.getElementById('orbWave'), octx = orbWave.getContext('2d');
 orbWave.width = 72*dpr; orbWave.height = 14*dpr;
-const BARS = 11, bars = Array.from({length:BARS}, ()=> new Spring(0, 320, 18));
+const BARS = 11, bars = Array.from({length:BARS}, ()=> new Spring(0, 140, 21)), bandS = new Array(BARS).fill(0);
+const ENV = Array.from({length:BARS}, (_, i)=> 0.5 + 0.5*Math.sin(Math.PI*(i+0.5)/BARS));   // taller centre, quiet edges
 function drawWave(dt, C){
   const state=visualState(),busy = state==='processing'||state==='transcribing'||state==='sending';
   const spectrum=['hearing','dictating'].includes(state)?S.micBands:playbackActive()?S.outBands:null;
@@ -383,14 +386,16 @@ function drawWave(dt, C){
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   const col = `rgb(${C.map(v=>Math.round(Math.min(1,v)*255)).join(',')})`;
   ctx.fillStyle = col;
-  const gap = canvas.width / BARS, bw = Math.max(2*dpr, gap*0.42), mid = canvas.height/2, t = performance.now()/1000;
+  const gap = canvas.width / BARS, bw = Math.max(1.5*dpr, gap*0.3), mid = canvas.height/2, t = performance.now()/1000;
   for (let i = 0; i < BARS; i++) {
-    let target = Math.max(0,Math.min(1,spectrum?.[i]||0));
-    if (busy) target = 0.22 + 0.18*Math.sin(t*7 - i*0.7);       // travelling shimmer while working
+    const raw = Math.max(0,Math.min(1,spectrum?.[i]||0));
+    bandS[i] += (raw - bandS[i]) * (1 - Math.exp(-dt * (raw > bandS[i] ? 12 : 5)));
+    let target = Math.pow(bandS[i], 0.85) * ENV[i];
+    if (busy) target = (0.10 + 0.07*Math.sin(t*3.2 - i*0.55)) * ENV[i];   // slow travelling shimmer while working
     bars[i].t = target; const v = Math.max(0, bars[i].step(dt));
-    const h = Math.max(2.4*dpr, Math.min(canvas.height, (0.12 + v*1.4) * canvas.height));
+    const h = Math.max(1.8*dpr, Math.min(canvas.height*0.86, (0.08 + v*0.8) * canvas.height));
     const x = i*gap + (gap-bw)/2;
-    ctx.globalAlpha = 0.45 + 0.55*Math.min(1, v*3);
+    ctx.globalAlpha = 0.26 + 0.44*Math.min(1, v*2.2);
     ctx.beginPath(); ctx.roundRect(x, mid - h/2, bw, h, bw/2); ctx.fill();
   }
   ctx.globalAlpha = 1;

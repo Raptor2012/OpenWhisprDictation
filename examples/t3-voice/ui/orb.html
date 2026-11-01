@@ -3,31 +3,32 @@
 <head>
 <meta charset="utf-8">
 <style>
-  :root { --fg:#f2f3f7; --muted:#9aa0ad; --glass:rgba(22,23,28,.78); --line:rgba(255,255,255,.08); }
+  :root { --fg:#f2f3f7; --muted:#9aa0ad; --glass:rgba(22,23,28,.80); --line:rgba(255,255,255,.08); --spring:cubic-bezier(.34,1.46,.64,1); }
   html, body { margin:0; height:100%; background:transparent; overflow:hidden; font-family:"Segoe UI Variable Text","Segoe UI",system-ui,sans-serif; color:var(--fg); user-select:none; -webkit-user-select:none; }
   #stage { position:absolute; inset:0; }
   #orb { position:absolute; left:50%; margin-left:-90px; bottom:0; }
-  #cap { position:absolute; left:0; right:0; bottom:18px; text-align:center; font-size:11.5px; letter-spacing:.2px; color:var(--muted); opacity:0; transition:opacity .35s; pointer-events:none; white-space:nowrap; }
-  #cap.show { opacity:1; }
-  #card { position:absolute; left:12px; right:12px; top:10px; bottom:150px; background:var(--glass); backdrop-filter:blur(18px) saturate(1.3); border:1px solid var(--line); border-radius:20px; padding:10px 12px 10px; box-sizing:border-box; opacity:0; transform:translateY(-8px) scale(.98); transition:opacity .22s ease, transform .22s ease; pointer-events:none; box-shadow:0 12px 40px rgba(0,0,0,.45); }
+  #cap { position:absolute; left:0; right:0; bottom:16px; text-align:center; font-size:11.5px; letter-spacing:.3px; color:var(--muted); opacity:0; transform:translateY(4px); transition:opacity .4s var(--spring), transform .5s var(--spring); pointer-events:none; white-space:nowrap; }
+  #cap.show { opacity:1; transform:none; }
+  #card { position:absolute; left:12px; right:12px; top:10px; bottom:150px; background:var(--glass); backdrop-filter:blur(18px) saturate(1.3); border:1px solid var(--line); border-radius:20px; padding:10px 12px 10px; box-sizing:border-box; opacity:0; transform:translateY(14px) scale(.94); transform-origin:50% 100%; transition:opacity .25s ease, transform .45s var(--spring); pointer-events:none; box-shadow:0 12px 40px rgba(0,0,0,.45); }
   #card.open { opacity:1; transform:none; pointer-events:auto; }
   .thread { display:flex; align-items:center; gap:8px; font-size:12.5px; cursor:pointer; padding:6px 8px; border-radius:10px; }
   .thread:hover { background:rgba(255,255,255,.06); }
   .thread .t { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .thread .chev { color:var(--muted); font-size:10px; }
-  #list { display:none; max-height:120px; overflow:auto; margin:4px 0 6px; border-top:1px solid var(--line); border-bottom:1px solid var(--line); }
+  #list { display:none; max-height:110px; overflow:auto; margin:4px 0 6px; border-top:1px solid var(--line); border-bottom:1px solid var(--line); }
   #list.open { display:block; }
   #list div { padding:6px 8px; font-size:12px; border-radius:8px; cursor:pointer; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   #list div:hover { background:rgba(255,255,255,.08); }
   .row { display:flex; gap:6px; margin-top:8px; }
-  .pill { flex:1; text-align:center; font-size:11.5px; padding:7px 6px; border-radius:999px; background:rgba(255,255,255,.07); border:1px solid transparent; cursor:pointer; transition:background .15s, border-color .15s; white-space:nowrap; }
+  .pill { flex:1; text-align:center; font-size:11.5px; padding:7px 6px; border-radius:999px; background:rgba(255,255,255,.07); border:1px solid transparent; cursor:pointer; transition:background .15s, border-color .15s, transform .35s var(--spring); white-space:nowrap; }
   .pill:hover { background:rgba(255,255,255,.12); }
+  .pill:active { transform:scale(.94); }
   .pill.on { background:rgba(111,141,255,.22); border-color:rgba(111,141,255,.5); }
   .pill.danger:hover { background:rgba(255,94,94,.22); }
   .foot { display:flex; justify-content:space-between; align-items:center; margin-top:10px; font-size:10.5px; color:var(--muted); }
   .foot span { cursor:pointer; padding:2px 4px; border-radius:6px; }
   .foot span:hover { color:var(--fg); background:rgba(255,255,255,.06); }
-  #menu { position:absolute; right:14px; top:40px; background:rgba(30,31,38,.96); border:1px solid var(--line); border-radius:12px; padding:6px; display:none; min-width:220px; box-shadow:0 10px 30px rgba(0,0,0,.5); }
+  #menu { position:absolute; right:14px; top:40px; background:rgba(30,31,38,.97); border:1px solid var(--line); border-radius:12px; padding:6px; display:none; min-width:220px; box-shadow:0 10px 30px rgba(0,0,0,.5); }
   #menu.open { display:block; }
   #menu div { padding:7px 10px; font-size:12px; border-radius:8px; cursor:pointer; }
   #menu div:hover { background:rgba(255,255,255,.08); }
@@ -56,73 +57,171 @@
     </div>
   </div>
 </div>
+
+<script id="vs" type="x-shader/x-vertex">
+attribute vec2 a; void main(){ gl_Position = vec4(a, 0.0, 1.0); }
+</script>
+<script id="fs" type="x-shader/x-fragment">
+precision highp float;
+uniform vec2 uRes;      // canvas size in device px
+uniform vec2 uCenter;   // orb centre in device px
+uniform float uR;       // orb radius in device px (spring-animated)
+uniform float uTime;
+uniform float uLevel;   // 0..1 spring-animated audio level
+uniform float uGlow;    // 0..1 halo strength
+uniform float uBusy;    // 0..1 busy ring visibility
+uniform float uSpin;    // busy ring angle
+uniform float uArc;     // busy ring arc length
+uniform float uRipple;  // 0..1 ripple visibility
+uniform float uOff;     // 0..1 voice-off desaturation
+uniform vec3 uA, uB, uC; // palette: deep, mid, bright
+
+vec3 hash3(vec3 p){ p = vec3(dot(p,vec3(127.1,311.7,74.7)), dot(p,vec3(269.5,183.3,246.1)), dot(p,vec3(113.5,271.9,124.6))); return -1.0 + 2.0*fract(sin(p)*43758.5453123); }
+float noise(vec3 p){ vec3 i = floor(p); vec3 f = fract(p); vec3 u = f*f*(3.0-2.0*f);
+  return mix(mix(mix(dot(hash3(i+vec3(0,0,0)),f-vec3(0,0,0)), dot(hash3(i+vec3(1,0,0)),f-vec3(1,0,0)),u.x),
+                 mix(dot(hash3(i+vec3(0,1,0)),f-vec3(0,1,0)), dot(hash3(i+vec3(1,1,0)),f-vec3(1,1,0)),u.x),u.y),
+             mix(mix(dot(hash3(i+vec3(0,0,1)),f-vec3(0,0,1)), dot(hash3(i+vec3(1,0,1)),f-vec3(1,0,1)),u.x),
+                 mix(dot(hash3(i+vec3(0,1,1)),f-vec3(0,1,1)), dot(hash3(i+vec3(1,1,1)),f-vec3(1,1,1)),u.x),u.y),u.z); }
+float fbm(vec3 p){ float v = 0.0, a = 0.5; for (int i=0;i<4;i++){ v += a*noise(p); p = p*2.03 + 7.1; a *= 0.5; } return v; }
+
+void main(){
+  vec2 px = gl_FragCoord.xy;
+  vec2 d = (px - uCenter) / uR;
+  float t = uTime;
+  float ang = atan(d.y, d.x);
+  // fluid silhouette: low-frequency wobble that grows with level
+  float wob = 1.0 + (0.025 + 0.11*uLevel) * fbm(vec3(cos(ang)*1.4, sin(ang)*1.4, t*0.6));
+  float r = length(d) / wob;
+  vec4 col = vec4(0.0);
+
+  // halo
+  float halo = exp(-(r - 1.0) * (3.4 - 1.4*uLevel)) * step(1.0, r);
+  vec3 haloCol = mix(uB, uC, 0.4);
+  col += vec4(haloCol, 1.0) * halo * (0.42*uGlow + 0.35*uLevel);
+
+  // ripples (speaking / hearing)
+  if (uRipple > 0.001) {
+    for (int k=0;k<2;k++){ float ph = fract(t*0.55 + float(k)*0.5); float rr = 1.08 + ph*1.15;
+      float ring = smoothstep(0.035, 0.0, abs(r - rr)) * (1.0-ph);
+      col += vec4(haloCol, 1.0) * ring * 0.35 * uRipple * (0.4 + uLevel); }
+  }
+
+  // busy ring
+  if (uBusy > 0.001) {
+    float ring = smoothstep(0.03, 0.0, abs(r - 1.24));
+    float a = mod(ang - uSpin, 6.2831853);
+    float seg = smoothstep(0.0, 0.25, a) * smoothstep(uArc, uArc-0.35, a);
+    col += vec4(uC, 1.0) * ring * (0.12 + 0.88*seg) * uBusy;
+  }
+
+  // sphere
+  if (r < 1.0) {
+    float z = sqrt(1.0 - r*r);
+    vec3 n = normalize(vec3(d.x/wob, d.y/wob, z));
+    vec3 sp = vec3(n.xy*1.2, z*0.6);
+    vec3 warp = vec3(fbm(sp*0.9 + vec3(0.0, t*0.16, t*0.10)), fbm(sp*0.9 + vec3(5.2, -t*0.12, t*0.08)), 0.0);
+    float f1 = fbm(sp*1.3 + warp*1.6 + vec3(t*0.10, -t*0.07, t*0.12*(1.0+2.0*uLevel)));
+    float f2 = fbm(sp*2.0 - warp*1.2 + vec3(-t*0.16, t*0.09, 3.0));
+    float band = smoothstep(-0.35, 0.40, f1 + 0.30*f2);
+    vec3 body = mix(uA, uB, band);
+    body = mix(body, uC, smoothstep(0.20, 0.70, f2 + 0.35*uLevel) * 0.6);
+    // glassy depth: darker toward the limb, brighter core
+    body *= 0.75 + 0.45*z;
+    vec3 L = normalize(vec3(-0.55, 0.75, 0.6));
+    float diff = 0.45 + 0.55*max(0.0, dot(n, L));
+    float fres = pow(1.0 - max(0.0, n.z), 2.6);
+    vec3 V = vec3(0.0,0.0,1.0); vec3 H = normalize(L+V);
+    float spec = pow(max(0.0, dot(n,H)), 120.0) * 0.85 + pow(max(0.0, dot(n,H)), 10.0)*0.22;
+    vec3 c = body*diff + uC*fres*0.7 + vec3(1.0)*spec;
+    c += uC * (0.10 + 0.25*uLevel) * (1.0 - r*r);
+    c += uB * 0.12 * max(0.0, -n.y) * (1.0 - fres);
+    float desat = dot(c, vec3(0.299,0.587,0.114));
+    c = mix(c, vec3(desat)*0.9, uOff*0.75);
+    float edge = smoothstep(1.0, 0.985, r);
+    col = mix(col, vec4(c, 1.0), edge);
+  }
+  gl_FragColor = vec4(col.rgb * min(col.a, 1.0), min(col.a, 1.0));
+}
+</script>
+
 <script>
 const PAL = {
-  loading:{c:[110,114,124],glow:.25}, off:{c:[96,101,112],glow:.25}, ready:{c:[58,214,166],glow:.55},
-  hearing:{c:[255,181,71],glow:.9}, transcribing:{c:[111,141,255],glow:.8}, sending:{c:[111,141,255],glow:.8},
-  waiting:{c:[111,141,255],glow:.6}, speaking:{c:[183,132,255],glow:1}, stopped:{c:[120,124,134],glow:.3},
-  error:{c:[255,94,94],glow:.9}
+  loading:{a:[.20,.21,.26], b:[.42,.44,.52], c:[.72,.74,.80], glow:.25},
+  off:    {a:[.16,.17,.22], b:[.36,.38,.46], c:[.62,.64,.72], glow:.20},
+  ready:  {a:[.02,.30,.34], b:[.10,.70,.62], c:[.55,.98,.85], glow:.55},
+  hearing:{a:[.42,.16,.02], b:[.98,.56,.14], c:[1.0,.86,.50], glow:.95},
+  transcribing:{a:[.08,.14,.46], b:[.30,.46,1.0], c:[.70,.82,1.0], glow:.8},
+  sending:{a:[.08,.14,.46], b:[.30,.46,1.0], c:[.70,.82,1.0], glow:.8},
+  waiting:{a:[.10,.12,.42], b:[.36,.44,.98], c:[.74,.80,1.0], glow:.6},
+  speaking:{a:[.28,.06,.48], b:[.68,.36,1.0], c:[.92,.78,1.0], glow:1.0},
+  stopped:{a:[.18,.19,.24], b:[.40,.42,.50], c:[.68,.70,.76], glow:.3},
+  error:  {a:[.40,.06,.08], b:[1.0,.30,.32], c:[1.0,.72,.70], glow:.9}
 };
 const LABEL = { loading:'Loading Maeve…', off:'Voice off', ready:'Listening', hearing:'Hearing you', transcribing:'Transcribing',
   sending:'Sending', waiting:'Thinking…', speaking:'Maeve', stopped:'Stopped', error:'Error' };
-const cv = document.getElementById('orb'), ctx = cv.getContext('2d');
-const W = 180, H = 150, CX = W/2, CY = 66, R = 30;
-let dpr = window.devicePixelRatio || 1;
-cv.width = W*dpr; cv.height = H*dpr; cv.style.width = W+'px'; cv.style.height = H+'px'; ctx.scale(dpr,dpr);
-let S = {state:'loading', text:'', mic:0, out:0, voiceOn:false, mode:'handsfree', thread:'', threads:[], detail:'', cleanup:false, startup:false, openwhispr:true};
-let col = [110,114,124], glow = .25, level = 0, pulse = 0, spin = 0, lastState = '', flash = 0, expanded = false;
-const lerp = (a,b,t)=>a+(b-a)*t;
-function draw(now){
+
+// Damped harmonic springs: every motion overshoots a little and settles, Apple style.
+class Spring { constructor(v, k=170, d=18){ this.x=v; this.v=0; this.k=k; this.d=d; this.t=v; }
+  step(dt){ const n = Math.max(1, Math.ceil(dt/0.004)); const h = dt/n; for(let i=0;i<n;i++){ const a = -this.k*(this.x-this.t) - this.d*this.v; this.v += a*h; this.x += this.v*h; } return this.x; } }
+class Spring3 { constructor(v,k,d){ this.s=[new Spring(v[0],k,d),new Spring(v[1],k,d),new Spring(v[2],k,d)]; } set t(v){ this.s[0].t=v[0]; this.s[1].t=v[1]; this.s[2].t=v[2]; } step(dt){ return this.s.map(s=>s.step(dt)); } }
+
+const cv = document.getElementById('orb');
+const W = 180, H = 150, CX = 90, CY = 84, R = 30;
+const dpr = window.devicePixelRatio || 1;
+cv.width = W*dpr; cv.height = H*dpr; cv.style.width = W+'px'; cv.style.height = H+'px';
+const gl = cv.getContext('webgl', {alpha:true, premultipliedAlpha:true, antialias:true});
+function sh(type, src){ const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s); if(!gl.getShaderParameter(s, gl.COMPILE_STATUS)) console.error(gl.getShaderInfoLog(s)); return s; }
+const prog = gl.createProgram();
+gl.attachShader(prog, sh(gl.VERTEX_SHADER, document.getElementById('vs').textContent));
+gl.attachShader(prog, sh(gl.FRAGMENT_SHADER, document.getElementById('fs').textContent));
+gl.linkProgram(prog); gl.useProgram(prog);
+const buf = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, 1,1]), gl.STATIC_DRAW);
+const aLoc = gl.getAttribLocation(prog, 'a'); gl.enableVertexAttribArray(aLoc); gl.vertexAttribPointer(aLoc, 2, gl.FLOAT, false, 0, 0);
+const U = {}; for (const n of ['uRes','uCenter','uR','uTime','uLevel','uGlow','uBusy','uSpin','uArc','uRipple','uOff','uA','uB','uC']) U[n] = gl.getUniformLocation(prog, n);
+gl.enable(gl.BLEND); gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+
+let S = {state:'loading', text:'', mic:0, out:0, voiceOn:false, mode:'handsfree', thread:'', threads:[], detail:'', cleanup:false, startup:false};
+const sA = new Spring3(PAL.loading.a, 60, 12), sB = new Spring3(PAL.loading.b, 60, 12), sC = new Spring3(PAL.loading.c, 60, 12);
+const sLevel = new Spring(0, 260, 16);
+const sScale = new Spring(1, 120, 11);
+const sGlow = new Spring(.25, 50, 10), sBusy = new Spring(0, 80, 12), sRipple = new Spring(0, 60, 11), sOff = new Spring(1, 40, 10);
+let spin = 0, lastT = performance.now(), lastState = '', expanded = false;
+
+function frame(now){
+  const dt = Math.min(0.05, (now - lastT)/1000); lastT = now;
   const p = PAL[S.state] || PAL.off;
-  for (let i=0;i<3;i++) col[i] = lerp(col[i], p.c[i], .12);
-  glow = lerp(glow, p.glow, .1);
-  const target = S.state==='hearing' ? Math.min(1, S.mic*3.2) : S.state==='speaking' ? Math.min(1, S.out*2.6) : 0;
-  level = lerp(level, target, target>level ? .45 : .12);
-  const breathe = .5 + .5*Math.sin(now/1300);
-  const base = R * (1 + .04*breathe + .22*level);
-  if (flash>0) flash = Math.max(0, flash-.06);
-  ctx.clearRect(0,0,W,H);
-  const rgb = `${col[0]|0},${col[1]|0},${col[2]|0}`;
-  // halo
-  const halo = ctx.createRadialGradient(CX,CY,base*.6, CX,CY, base*2.6);
-  halo.addColorStop(0, `rgba(${rgb},${.42*glow + .25*level})`);
-  halo.addColorStop(1, `rgba(${rgb},0)`);
-  ctx.fillStyle = halo; ctx.beginPath(); ctx.arc(CX,CY,base*2.6,0,Math.PI*2); ctx.fill();
-  // speaking ripples
-  if (S.state==='speaking' || S.state==='hearing') {
-    for (let k=0;k<2;k++){
-      const t = ((now/1100)+k*.5)%1;
-      ctx.strokeStyle = `rgba(${rgb},${(1-t)*.35*(.3+level)})`; ctx.lineWidth = 1.5;
-      ctx.beginPath(); ctx.arc(CX,CY, base*(1.1+t*1.2), 0, Math.PI*2); ctx.stroke();
-    }
-  }
-  // busy arc
-  if (S.state==='transcribing' || S.state==='sending' || S.state==='waiting') {
-    spin += .09;
-    ctx.strokeStyle = `rgba(${rgb},.9)`; ctx.lineWidth = 2.5; ctx.lineCap='round';
-    ctx.beginPath(); ctx.arc(CX,CY, base+8, spin, spin + (S.state==='waiting'? 2.2 : 1.2)); ctx.stroke();
-    ctx.strokeStyle = `rgba(${rgb},.18)`; ctx.beginPath(); ctx.arc(CX,CY, base+8, 0, Math.PI*2); ctx.stroke();
-  }
-  // orb body
-  const body = ctx.createRadialGradient(CX-base*.35, CY-base*.4, base*.1, CX, CY, base);
-  body.addColorStop(0, `rgba(255,255,255,.95)`);
-  body.addColorStop(.25, `rgba(${rgb},.95)`);
-  body.addColorStop(1, `rgba(${(col[0]*.35)|0},${(col[1]*.35)|0},${(col[2]*.45)|0},1)`);
-  ctx.fillStyle = body; ctx.beginPath(); ctx.arc(CX,CY,base,0,Math.PI*2); ctx.fill();
-  // rim light + flash
-  ctx.strokeStyle = `rgba(255,255,255,${.18 + flash*.6})`; ctx.lineWidth = 1; ctx.beginPath(); ctx.arc(CX,CY,base-.5,0,Math.PI*2); ctx.stroke();
-  // voice off: a quiet inner dot instead of a glyph
-  if (!S.voiceOn) { ctx.fillStyle='rgba(255,255,255,.35)'; ctx.beginPath(); ctx.arc(CX,CY,4,0,Math.PI*2); ctx.fill(); }
-  requestAnimationFrame(draw);
+  sA.t = p.a; sB.t = p.b; sC.t = p.c; sGlow.t = p.glow;
+  const audio = S.state==='hearing' ? Math.min(1, S.mic*3.4) : S.state==='speaking' ? Math.min(1, S.out*2.8) : 0;
+  sLevel.t = audio;
+  sBusy.t = (S.state==='transcribing'||S.state==='sending'||S.state==='waiting') ? 1 : 0;
+  sRipple.t = (S.state==='speaking'||S.state==='hearing') ? 1 : 0; sOff.t = S.voiceOn ? 0 : 1;
+  if (S.state !== lastState) { sScale.v += (S.state==='hearing'||S.state==='speaking') ? 1.6 : S.state==='error' ? -1.2 : 0.9; lastState = S.state; }
+  const breathe = 1 + 0.025*Math.sin(now/1100);
+  sScale.t = breathe * (1 + 0.18*sLevel.x);
+  const lvl = sLevel.step(dt), scale = sScale.step(dt), glow = sGlow.step(dt), b = sBusy.step(dt), rip = sRipple.step(dt), off = sOff.step(dt);
+  const A = sA.step(dt), B = sB.step(dt), C = sC.step(dt);
+  spin += dt * (S.state==='waiting' ? 2.2 : 4.0);
+  gl.viewport(0, 0, cv.width, cv.height);
+  gl.clearColor(0,0,0,0); gl.clear(gl.COLOR_BUFFER_BIT);
+  gl.uniform2f(U.uRes, cv.width, cv.height);
+  gl.uniform2f(U.uCenter, CX*dpr, (H-CY)*dpr);
+  gl.uniform1f(U.uR, R*dpr*scale);
+  gl.uniform1f(U.uTime, now/1000);
+  gl.uniform1f(U.uLevel, Math.max(0, lvl));
+  gl.uniform1f(U.uGlow, glow); gl.uniform1f(U.uBusy, b); gl.uniform1f(U.uSpin, spin);
+  gl.uniform1f(U.uArc, S.state==='waiting' ? 2.4 : 1.4); gl.uniform1f(U.uRipple, rip); gl.uniform1f(U.uOff, off);
+  gl.uniform3fv(U.uA, A); gl.uniform3fv(U.uB, B); gl.uniform3fv(U.uC, C);
+  gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+  requestAnimationFrame(frame);
 }
-requestAnimationFrame(draw);
+requestAnimationFrame(frame);
 
 const cap = document.getElementById('cap');
 const card = document.getElementById('card');
 function render(){
   const label = S.text || LABEL[S.state] || '';
   cap.textContent = label; cap.classList.toggle('show', !!label && (S.state!=='ready' || expanded));
-  if (S.state!==lastState) { if (S.state==='sending'||S.state==='error') flash = 1; lastState = S.state; }
   document.getElementById('threadName').textContent = S.threadTitle || 'Choose a thread';
   const pv = document.getElementById('pVoice'); pv.textContent = S.voiceOn ? 'Voice on' : 'Voice off'; pv.classList.toggle('on', S.voiceOn);
   document.getElementById('pMode').textContent = S.mode==='handsfree' ? 'Hands-free mic' : 'OpenWhispr hotkey';
@@ -136,21 +235,19 @@ function render(){
   }
 }
 async function poll(){ try { S = await pywebview.api.poll(); render(); } catch(e){} setTimeout(poll, 50); }
-const DEMO = new URLSearchParams(location.search).get('demo');
+const Q = new URLSearchParams(location.search), DEMO = Q.get('demo');
 if (DEMO) {
-  // Design preview without the engine: cycle states with synthetic levels.
   const seq = ['ready','hearing','transcribing','sending','waiting','speaking','off','error'];
   let i = seq.indexOf(DEMO); if (i < 0) i = 0;
   S = {state:seq[i], text:'', mic:0, out:0, voiceOn:true, mode:'handsfree', thread:'x', threadTitle:'Choose a Fast Local Live TTS Model',
        threads:[{id:'x',title:'Choose a Fast Local Live TTS Model'},{id:'y',title:'P13 repo cleanup'}], detail:'Sent 9 words · ASR 280 ms · total 310 ms · voice 40 ms', cleanup:false, startup:true};
-  setInterval(()=>{ S.mic = .15 + .25*Math.abs(Math.sin(Date.now()/90)); S.out = .12 + .22*Math.abs(Math.sin(Date.now()/70)); render(); }, 50);
-  if (!seq.includes(DEMO)) setInterval(()=>{ i=(i+1)%seq.length; S.state=seq[i]; S.voiceOn = S.state!=='off'; }, 1600);
-  if (new URLSearchParams(location.search).get('card')) { expanded = true; card.classList.add('open'); }
+  setInterval(()=>{ const t = Date.now(); S.mic = .12 + .22*Math.abs(Math.sin(t/95)) * (0.5+0.5*Math.sin(t/700)); S.out = .10 + .22*Math.abs(Math.sin(t/70)) * (0.5+0.5*Math.sin(t/500)); render(); }, 50);
+  if (!seq.includes(DEMO)) setInterval(()=>{ i=(i+1)%seq.length; S.state=seq[i]; S.voiceOn = S.state!=='off'; }, 1800);
+  if (Q.get('card')) { expanded = true; card.classList.add('open'); }
 } else {
   window.addEventListener('pywebviewready', poll);
 }
-
-function setExpanded(v){ if (expanded===v) return; expanded = v; card.classList.toggle('open', v); if(!v){document.getElementById('list').classList.remove('open'); document.getElementById('menu').classList.remove('open');} pywebview.api.set_expanded(v); }
+function setExpanded(v){ if (expanded===v) return; expanded = v; card.classList.toggle('open', v); if(!v){document.getElementById('list').classList.remove('open'); document.getElementById('menu').classList.remove('open');} if (!DEMO) pywebview.api.set_expanded(v); }
 cv.addEventListener('click', ()=> setExpanded(!expanded));
 document.addEventListener('mouseleave', ()=> setTimeout(()=>{ if(!document.matches(':hover')) setExpanded(false); }, 400));
 document.getElementById('threadBtn').onclick = ()=> document.getElementById('list').classList.toggle('open');
@@ -163,7 +260,6 @@ document.getElementById('fMore').onclick = (e)=>{ e.stopPropagation(); document.
 document.getElementById('mCleanup').onclick = ()=> pywebview.api.toggle_cleanup();
 document.getElementById('mStartup').onclick = ()=> pywebview.api.toggle_startup();
 document.addEventListener('keydown', e=>{ if (e.key==='Escape') { if (expanded) setExpanded(false); else pywebview.api.stop(); } });
-// drag anywhere on the orb area (pywebview easy_drag handles the window; keep card clicks local)
 </script>
 </body>
 </html>

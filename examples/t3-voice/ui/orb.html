@@ -88,8 +88,17 @@
   body.bar #cap, body.bar #badge { display:none; }
 
   /* settings card */
-  #card { position:absolute; left:12px; right:12px; bottom:150px; max-height:calc(100% - 160px); background:var(--glass); backdrop-filter:blur(18px) saturate(1.3); border:1px solid var(--line); border-radius:20px; padding:10px 12px 10px; box-sizing:border-box; opacity:0; transform:translateY(14px) scale(.94); transform-origin:50% 100%; transition:opacity .25s ease, transform .45s var(--spring); pointer-events:none; box-shadow:0 12px 40px rgba(0,0,0,.45); }
+  #card { min-height:200px; position:absolute; left:12px; right:12px; bottom:150px; max-height:calc(100% - 160px); background:var(--glass); backdrop-filter:blur(18px) saturate(1.3); border:1px solid var(--line); border-radius:20px; padding:10px 12px 10px; box-sizing:border-box; opacity:0; transform:translateY(14px) scale(.94); transform-origin:50% 100%; transition:opacity .25s ease, transform .45s var(--spring); pointer-events:none; box-shadow:0 12px 40px rgba(0,0,0,.45); }
   #card.open { opacity:1; transform:none; pointer-events:auto; }
+  #devices { position:absolute; inset:0; box-sizing:border-box; padding:12px 14px; border-radius:20px; background:rgba(22,23,29,.97);
+             display:none; flex-direction:column; gap:7px; }
+  #devices.open { display:flex; }
+  #devices .dhead { font-size:12.5px; color:var(--fg); }
+  #devices label { font-size:10.5px; color:var(--muted); display:flex; flex-direction:column; gap:3px; }
+  #devices select { width:100%; box-sizing:border-box; padding:5px 8px; border-radius:9px; border:1px solid var(--line); background:#292b34; color:var(--fg); font:11.5px "Segoe UI",sans-serif; }
+  #devices .dnote { font-size:9.5px; color:var(--muted); line-height:1.35; }
+  #devices .dfoot { margin-top:auto; display:flex; justify-content:flex-end; }
+  #devices .dfoot span { font-size:11px; color:var(--fg); cursor:pointer; padding:3px 8px; border-radius:7px; background:rgba(255,255,255,.08); }
   #delivery { width:100%; box-sizing:border-box; margin-top:7px; padding:5px 8px; border-radius:9px; border:1px solid var(--line); background:#292b34; color:var(--fg); font:11.5px "Segoe UI",sans-serif; }
   #review { display:none; position:absolute; left:50%; bottom:112px; width:300px; margin-left:-150px; box-sizing:border-box; padding:11px 13px; border-radius:18px; background:var(--glass); border:1px solid var(--line); backdrop-filter:blur(20px); box-shadow:0 12px 35px rgba(0,0,0,.35); }
   #review.show { display:block; animation:barIn .35s var(--spring); }
@@ -153,6 +162,14 @@
       <div id="mStartup">Start with Windows</div>
       <div id="mFx">Techno audio effect</div>
       <div id="mDock">Minimize to toolbar</div>
+      <div id="mDevices">Audio devices…</div>
+    </div>
+    <div id="devices" aria-label="Audio devices">
+      <div class="dhead">Audio devices</div>
+      <label>Speaker (Maeve's voice)<select id="spkSel"></select></label>
+      <label>Microphone (orb levels and live preview)<select id="micSel"></select></label>
+      <div class="dnote">Dictation itself is recorded by OpenWhispr with the mic chosen in its own settings.</div>
+      <div class="dfoot"><span id="devDone">Done</span></div>
     </div>
   </div>
   <div id="review">
@@ -619,7 +636,7 @@ function acceptSnapshot(next, generation, wasPending){
 }
 async function poll(){
   const generation = settingsGeneration, wasPending = settingsPending > 0;
-  try { acceptSnapshot(await pywebview.api.poll(), generation, wasPending); } catch(e){}
+  try { acceptSnapshot(await pywebview.api.poll(choosingDelivery), generation, wasPending); } catch(e){}
   setTimeout(poll, 50);
 }
 if (DEMO) {
@@ -639,7 +656,7 @@ if (DEMO) {
   window.addEventListener('pywebviewready', poll);
 }
 let wantExpanded = false;   // the latest requested state; the card opens only after the window grows
-function applyExpanded(v){ expanded=v; wantExpanded=v; card.classList.toggle('open', v); if(!v){document.getElementById('list').classList.remove('open'); document.getElementById('menu').classList.remove('open');} }
+function applyExpanded(v){ expanded=v; wantExpanded=v; card.classList.toggle('open', v); if(!v){ devicesEl?.classList.remove('open'); choosingDelivery=false; } if(!v){document.getElementById('list').classList.remove('open'); document.getElementById('menu').classList.remove('open');} }
 function setExpanded(v){
   if (S.review || wantExpanded===v) return;
   wantExpanded = v;
@@ -687,6 +704,23 @@ document.getElementById('fTest').onclick = ()=> api('test_voice');
 document.getElementById('fQuit').onclick = ()=> api('quit');
 document.getElementById('fMore').onclick = (e)=>{ e.stopPropagation(); document.getElementById('menu').classList.toggle('open'); panelExtra(); };
 function closeMenu(){document.getElementById('menu').classList.remove('open');panelExtra();}
+const devicesEl = document.getElementById('devices'), micSel = document.getElementById('micSel'), spkSel = document.getElementById('spkSel');
+function fillSelect(sel, items, current){
+  sel.replaceChildren(new Option('System default', ''));
+  for (const d of items) sel.add(new Option(d.label, d.name));
+  sel.value = items.some(d => d.name === current) ? current : '';
+}
+async function openDevices(){
+  closeMenu(); devicesEl.classList.add('open');
+  const list = await api('audio_devices');
+  if (!list) return;
+  fillSelect(spkSel, list.outputs, list.speaker); fillSelect(micSel, list.inputs, list.mic);
+}
+document.getElementById('mDevices').onclick = ()=> openDevices();
+document.getElementById('devDone').onclick = ()=> devicesEl.classList.remove('open');
+spkSel.addEventListener('change', ()=> api('set_speaker_device', spkSel.value));
+micSel.addEventListener('change', ()=> api('set_mic_device', micSel.value));
+for (const sel of [spkSel, micSel]) { sel.addEventListener('pointerdown', ()=>{choosingDelivery=true;}); sel.addEventListener('blur', ()=>{choosingDelivery=false;}); }
 document.getElementById('mCleanup').onclick = ()=> {closeMenu();api('toggle_cleanup');};
 document.getElementById('mStartup').onclick = ()=> {closeMenu();api('toggle_startup');};
 document.getElementById('mFx').onclick = ()=> {closeMenu();S.voiceFx = S.voiceFx === false;render();api('toggle_voice_fx');};
@@ -696,7 +730,7 @@ function sendReview(){ if (!S.review || !reviewText.value.trim() || document.get
 document.getElementById('reviewSend').onclick = sendReview;
 document.getElementById('reviewCancel').onclick = ()=> api('cancel_review');
 document.addEventListener('pointerdown',e=>{if(!e.target.closest('#menu,#fMore')&&document.getElementById('menu').classList.contains('open'))closeMenu();});
-for(const el of document.querySelectorAll('.ctl,.bbtn,.pill,#orb,#toBar,#barOrb,#threadBtn,.foot span,#menu div')){
+for(const el of document.querySelectorAll('.ctl,.bbtn,.pill,#orb,#toBar,#barOrb,#threadBtn,.foot span,#menu div,#devDone')){
   el.setAttribute('role','button');el.tabIndex=0;
   if(el.title)el.setAttribute('aria-label',el.title);
   el.addEventListener('keydown',e=>{if((e.key==='Enter'||e.key===' ')&&!e.repeat){e.preventDefault();e.stopPropagation();el.click();}});

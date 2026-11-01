@@ -65,6 +65,36 @@ def _minimum_phase_eq(rate, taps=512, grid=8192):
     return h.astype(np.float32)
 
 
+def _mme_index(hostapis):
+    return next((i for i, api in enumerate(hostapis) if api['name'] == 'MME'), 0)
+
+
+def audio_device_choices(devices, hostapis, kind):
+    """[(name, label)] for one direction on the MME host API that the orb's streams use.
+    MME cuts names at 31 characters, so the label borrows the full name another host API reports."""
+    key = 'max_input_channels' if kind == 'input' else 'max_output_channels'
+    mme = _mme_index(hostapis)
+    full = [d['name'] for d in devices if d['hostapi'] != mme and d[key] > 0]
+    choices = []
+    for d in devices:
+        if d['hostapi'] != mme or d[key] <= 0 or 'Sound Mapper' in d['name']:
+            continue
+        if any(name == d['name'] for name, _ in choices):
+            continue
+        label = next((f for f in full if f.startswith(d['name']) and len(f) > len(d['name'])), d['name'])
+        choices.append((d['name'], label))
+    return choices
+
+
+def resolve_audio_device(name, devices, hostapis, kind):
+    """Index of the saved device, or None for the system default (also when it is unplugged)."""
+    if not name:
+        return None
+    key = 'max_input_channels' if kind == 'input' else 'max_output_channels'
+    mme = _mme_index(hostapis)
+    return next((i for i, d in enumerate(devices) if d['hostapi'] == mme and d[key] > 0 and d['name'] == name), None)
+
+
 class _OverlapAdd:
     """Streaming FFT convolution; chunked output equals one-shot output."""
     def __init__(self, kernel):

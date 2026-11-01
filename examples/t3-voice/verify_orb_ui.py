@@ -82,7 +82,7 @@ def run():
         for state, dock, panel in cases:
             width, height = ((200,48) if dock else (180,150))
             if panel in ('card','menu','list'):
-                width,height = (320,246 if dock else 336)
+                width,height = (320,270 if dock else 360)
                 if panel=='list':height+=120
             elif panel:
                 width,height = (340,214 if dock else 300)
@@ -120,6 +120,31 @@ def run():
             if result['bad'] or result['errors']:report['failures'].append(result)
             if panel in ('review','menu','live','processing-preview','placeholder') or state=='dictating':
                 capture(('bar' if dock else 'orb')+'-'+(panel or state))
+        # Exercise the devices overlay in both card sizes without native input or audio.
+        for dock in (False, True):
+            resize(320,270 if dock else 360)
+            window.evaluate_js("S.review=null;S.bubble=null;S.dock=%s;S.expanded=true;render();" % json.dumps(dock))
+            window.evaluate_js("""window.qaDeviceApi=api;
+              api=async(name,...args)=>name==='audio_devices'?{
+                inputs:[{name:'mic',label:'Microphone (USB Condenser Microphone)'}],
+                outputs:[{name:'speaker',label:'Headphones (ULT WEAR)'}],mic:'mic',speaker:''}:qaDeviceApi(name,...args);
+              openDevices();""")
+            time.sleep(.6)
+            device = window.evaluate_js("""(()=>{
+              const ids=['devices','spkSel','micSel','devDone'],bad=[];
+              for(const id of ids){const r=document.getElementById(id).getBoundingClientRect();
+                if(!r.width||!r.height||r.left<0||r.top<0||r.right>innerWidth||r.bottom>innerHeight)bad.push(id);}
+              const panel=devicesEl.getBoundingClientRect();
+              for(const el of devicesEl.children){const r=el.getBoundingClientRect();if(r.bottom>panel.bottom||r.top<panel.top)bad.push(el.className);}
+              return {bad,defaults:[spkSel,micSel].every(s=>s.options[0].value===''&&s.options[0].text==='System default'),
+                selected:micSel.value==='mic'&&spkSel.value==='',errors:qaErrors.slice()};
+            })()""")
+            capture(('bar' if dock else 'orb')+'-devices')
+            window.evaluate_js("applyExpanded(false);api=qaDeviceApi;")
+            device['closesWithCard'] = window.evaluate_js("!devicesEl.classList.contains('open')")
+            report.setdefault('devices',[]).append(device)
+            if device['bad'] or device['errors'] or not all(device[k] for k in ('defaults','selected','closesWithCard')):
+                report['failures'].append({'devices':device})
         preview = window.evaluate_js('''(()=>{
           S.review=null;S.bubble={id:'revision-test',who:'you',live:true,text:'Open the wrong file'};tickBubble(.1);
           S.bubble.text='Open the right file';tickBubble(.1);

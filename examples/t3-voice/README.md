@@ -54,6 +54,8 @@ Use the **Transcript delivery** dropdown in settings to choose:
 - **Review above the orb**: show an editable preview with its destination title. **Enter** sends once, **Shift+Enter** adds a line, and **Esc** or **Cancel** discards it. While sending, editing and repeat confirmation are disabled. A failed send keeps the edited text and offers **Retry**; a successful send dismisses the preview. The destination stays fixed until you send or cancel.
 - **Draft in T3**: append the transcript to the existing composer draft in the exact captured thread without submitting it. Press **Enter in T3** when ready. This uses the composer's accessibility value API, never simulated keys or an arbitrary clipboard paste. The destination must still be open in T3; a mismatch or inaccessible editor reports an error and sends nothing. An already-pasted matching transcript is not appended twice.
 
+**Options → Audio devices…** chooses Maeve's speaker and the microphone for orb levels and live preview; both default to System default, apply immediately, and survive restarts. OpenWhispr records dictation using its own microphone setting.
+
 The follow, pin and delivery preferences survive restarts. Settings grow upward when the thread list opens; the options menu stays compact. Expanded windows are clamped to the current monitor's work area. Controls and editable text do not initiate window dragging; the orb and toolbar waveform remain draggable. Controls expose keyboard focus and accessible labels. Stop with the Stop pill or Ctrl+Alt+M; the shortcut cancels an unsent review. Options also holds **Clean up with OpenWhispr's model** (adds its local cleanup latency) and **Start with Windows**.
 
 ## Files
@@ -66,7 +68,7 @@ The follow, pin and delivery preferences survive restarts. Settings grow upward 
 | `live_reader_core.py` | Read-only SQLite feed of T3 messages and Markdown-to-prose cleaning |
 | `live_reader.py` | Earlier reader; the panel reuses its persistent audio device |
 | `pair_t3.py` | Mints the MCP token through T3's pairing-code OAuth flow |
-| `test_*.py` | `python -m unittest test_orb_logic test_t3_voice_core test_live_reader -q` runs 81 tests, including frequency-specific microphone/playback feedback, quiet-audio sensitivity, bubble completion/fade timing, bounded hold-only previews, stale-result rejection, held-recording completion races, meter peak retention, both overlay variants, work-area clamping, review failure/retry and routing; no audio needed |
+| `test_*.py` | `python -m unittest test_orb_logic test_t3_voice_core test_live_reader -q` runs 87 tests, including audio-device resolution and switching, frequency-specific microphone/playback feedback, quiet-audio sensitivity, bubble completion/fade timing, bounded hold-only previews, stale-result rejection, held-recording completion races, meter peak retention, both overlay variants, work-area clamping, review failure/retry and routing; no audio needed |
 | `verify_orb_ui.py` | Optional WebView2 verification: `python verify_orb_ui.py` checks 46 state/layout combinations, the transcribing placeholder, frequency-band response with quiet PCM fixtures, unmasked text, a monotonic completion fade, live word revisions, dismissal races and control callbacks in an isolated demo. It never opens the mic, simulates input or sends to T3. Evidence is written beneath `runtime/orb-ui-qa/`. |
 
 `t3-voice-token.txt`, settings, status and logs are git-ignored. The status file holds timings and counters only, never conversation text.

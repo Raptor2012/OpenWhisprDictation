@@ -27,7 +27,7 @@ THREAD = 'e1702ae5-e5aa-4d2f-822c-26bbf95dfb95'
 
 class ContinuousAudio:
     """One persistent device; callback always supplies PCM or silence."""
-    def __init__(self):
+    def __init__(self, device=None):
         self.cv = threading.Condition()
         self.chunks = deque()
         self.pending = 0
@@ -37,7 +37,7 @@ class ContinuousAudio:
         self.output_underflows = 0
         self.level = 0.0
         self.spectrum = [0.0]*11
-        self.stream = sd.RawOutputStream(samplerate=24000, channels=1, dtype='int16',
+        self.stream = sd.RawOutputStream(samplerate=24000, channels=1, dtype='int16', device=device,
                                          blocksize=480, latency='low', callback=self.callback)
         self.stream.start()
 

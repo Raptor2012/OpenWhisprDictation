@@ -3,6 +3,7 @@ import sys
 import time
 import unittest
 import queue
+import threading
 from collections import deque
 from unittest.mock import Mock, patch
 from types import SimpleNamespace
@@ -15,7 +16,7 @@ from live_reader_core import Message
 
 def engine(**fields):
     e = t3_voice.Engine.__new__(t3_voice.Engine)
-    defaults = dict(asr_pending=0, panel_extra=False, review=None, delivery='immediate', follow_active=False, active_thread=None, dock=False, dict_state='', expanded=False, hovered=False, pin_until=0.0, pending=None, state='ready', confirmed=False,
+    defaults = dict(choosing_delivery=False, mic_device="", speaker_device="", asr_pending=0, panel_extra=False, review=None, delivery='immediate', follow_active=False, active_thread=None, dock=False, dict_state='', expanded=False, hovered=False, pin_until=0.0, pending=None, state='ready', confirmed=False,
                     sent_at=0.0, error_at=0.0, t3_min=False, bubble=None, bubble_until=0.0, bubble_seq=0,
                     bubble_run=None, silent=deque(), meta={}, dict_preview_text='', dict_preview_until=0,
                     dict_preview_session=0, dict_preview=None, dictating=False, mic_level=0, current=None,
@@ -524,3 +525,57 @@ class CardWatchTests(unittest.TestCase):
     def test_sustained_pointer_exit_closes_it(self):
         self.watch(foreground=100, cursor_inside=False, outside_for=3.0).set_expanded.assert_called_once_with(False)
         self.watch(foreground=100, cursor_inside=False, outside_for=1.0).set_expanded.assert_not_called()
+
+
+class DeviceSwitchTests(unittest.TestCase):
+    def test_failed_speaker_open_keeps_old_stream_and_preference(self):
+        old = Mock()
+        e = engine(lock=threading.RLock(), speaker_device='old', audio=old,
+                   stop=Mock(), prefs=Mock(), cue=Mock(), device_index=Mock(return_value=7))
+        with patch.object(t3_voice, 'ContinuousAudio', side_effect=RuntimeError('unavailable')):
+            e.set_speaker_device('new')
+        self.assertIs(e.audio, old)
+        self.assertEqual('old', e.speaker_device)
+        old.close.assert_not_called()
+        e.prefs.set.assert_not_called()
+        e.cue.assert_not_called()
+
+    def test_speaker_switch_stops_swaps_closes_saves_and_chimes(self):
+        old, fresh = Mock(), Mock()
+        e = engine(lock=threading.RLock(), audio=old, stop=Mock(), prefs=Mock(),
+                   cue=Mock(), device_index=Mock(return_value=7))
+        def opened(**kwargs):
+            e.stop.assert_called_once()
+            old.close.assert_not_called()
+            self.assertEqual({'device':7}, kwargs)
+            return fresh
+        with patch.object(t3_voice, 'ContinuousAudio', side_effect=opened):
+            e.set_speaker_device('new')
+        self.assertIs(e.audio, fresh)
+        old.close.assert_called_once()
+        e.prefs.set.assert_called_once_with('speakerDevice', 'new')
+        e.cue.assert_called_once_with([523, 659], 60)
+
+    def test_mic_switch_reopens_active_stream_and_saves_default(self):
+        old = Mock()
+        e = engine(lock=threading.RLock(), mic_stream=old, prefs=Mock(), update_mic=Mock())
+        e.set_mic_device('usb mic')
+        old.abort.assert_called_once()
+        old.close.assert_called_once()
+        self.assertIsNone(e.mic_stream)
+        e.update_mic.assert_called_once()
+        e.prefs.set.assert_called_with('micDevice', 'usb mic')
+        e.set_mic_device('')
+        self.assertEqual('', e.mic_device)
+        e.prefs.set.assert_called_with('micDevice', '')
+
+
+class NativeDropdownTests(unittest.TestCase):
+    def test_open_dropdown_suspends_card_dismissal_and_resets_leave_timer(self):
+        e=engine(choosing_delivery=True,expanded=True,hwnd=123,expanded_at=0,
+                 outside_since=1,set_expanded=Mock())
+        with patch.object(t3_voice.user32,'GetForegroundWindow') as foreground:
+            e.card_watch(100)
+        foreground.assert_not_called()
+        e.set_expanded.assert_not_called()
+        self.assertIsNone(e.outside_since)

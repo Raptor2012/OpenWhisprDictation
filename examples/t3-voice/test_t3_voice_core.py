@@ -6,7 +6,7 @@ import unittest
 from unittest.mock import patch
 
 import test_live_reader
-from t3_voice_core import VoiceFx, DictationWatch, McpSender, OpenWhisprFeed, parse_hotkey, Routes, StreamingFeed, UtteranceGate, send_message_cli
+from t3_voice_core import audio_device_choices, resolve_audio_device, VoiceFx, DictationWatch, McpSender, OpenWhisprFeed, parse_hotkey, Routes, StreamingFeed, UtteranceGate, send_message_cli
 from t3_voice_core import parse_thread_url
 
 
@@ -325,3 +325,26 @@ class VoiceFxDrainTests(unittest.TestCase):
         self.assertTrue(all(len(s) == 1200 for s in slices))
         self.assertGreater(float(np.max(np.abs(slices[0]))), 1e-3)
         self.assertEqual(0.0, float(np.max(np.abs(fx.process(np.zeros(2400, np.float32))))))
+
+
+class AudioDeviceTests(unittest.TestCase):
+    hostapis = [{'name': 'MME'}, {'name': 'Windows DirectSound'}]
+    devices = [
+        {'name': 'Microsoft Sound Mapper - Input', 'hostapi': 0, 'max_input_channels': 2, 'max_output_channels': 0},
+        {'name': 'Microphone (USB Condenser Micro', 'hostapi': 0, 'max_input_channels': 1, 'max_output_channels': 0},
+        {'name': 'Headphones (ULT WEAR)', 'hostapi': 0, 'max_input_channels': 0, 'max_output_channels': 2},
+        {'name': 'Microphone (USB Condenser Microphone)', 'hostapi': 1, 'max_input_channels': 1, 'max_output_channels': 0},
+    ]
+
+    def test_choices_skip_mappers_and_use_full_names(self):
+        self.assertEqual([('Microphone (USB Condenser Micro', 'Microphone (USB Condenser Microphone)')],
+                         audio_device_choices(self.devices, self.hostapis, 'input'))
+        self.assertEqual([('Headphones (ULT WEAR)', 'Headphones (ULT WEAR)')],
+                         audio_device_choices(self.devices, self.hostapis, 'output'))
+
+    def test_saved_device_resolves_and_missing_falls_back_to_default(self):
+        self.assertEqual(1, resolve_audio_device('Microphone (USB Condenser Micro', self.devices, self.hostapis, 'input'))
+        self.assertEqual(2, resolve_audio_device('Headphones (ULT WEAR)', self.devices, self.hostapis, 'output'))
+        self.assertIsNone(resolve_audio_device('', self.devices, self.hostapis, 'input'))
+        self.assertIsNone(resolve_audio_device('Unplugged headset', self.devices, self.hostapis, 'output'))
+        self.assertIsNone(resolve_audio_device('Headphones (ULT WEAR)', self.devices, self.hostapis, 'input'))

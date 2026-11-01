@@ -30,15 +30,15 @@ import webview
 from diagnostics import write_status
 from live_reader import ContinuousAudio
 from live_reader_core import Message
-from t3_voice_core import (DictationPreview, DictationWatch, VoiceFx, OpenWhisprFeed, Routes, StreamingFeed, UtteranceGate, cleanup_text,
+from t3_voice_core import (DictationPreview, DictationWatch, VoiceFx, audio_device_choices, resolve_audio_device, OpenWhisprFeed, Routes, StreamingFeed, UtteranceGate, cleanup_text,
                            audio_feedback, list_threads, parse_hotkey, parse_thread_url, read_env, send_message, transcribe)
 
 ROOT = Path(__file__).resolve().parent
 DB = Path.home() / '.t3/userdata/statev2.sqlite'
 RATE = 16000
 FRAME = 320  # 20 ms at 16 kHz
-COMPACT, BUBBLE, CARD = (180, 150), (340, 300), (320, 336)
-BAR, BAR_BUBBLE, BAR_CARD = (200, 48), (340, 214), (320, 246)   # toolbar mode
+COMPACT, BUBBLE, CARD = (180, 150), (340, 300), (320, 360)
+BAR, BAR_BUBBLE, BAR_CARD = (200, 48), (340, 214), (320, 270)   # toolbar mode
 OPENWHISPR_ENV = Path(os.environ.get('APPDATA', '')) / 'OpenWhisprDictation/.env'
 LINGER = 1.2        # seconds the orb stays after the last reason to show it
 FADE = 0.5          # seconds for the exit animation before the window is hidden
@@ -200,6 +200,9 @@ class Engine:
         self.cleanup = bool(self.prefs.get('cleanup', False))
         self.voice_fx = bool(self.prefs.get('voiceFx', True))   # Techno audio effect: interface EQ, sheen and plate reverb
         self.fx = VoiceFx()
+        self.mic_device = self.prefs.get('micDevice', '')          # '' = system default
+        self.speaker_device = self.prefs.get('speakerDevice', '')
+        self.choosing_delivery = False
         self.expanded_at = 0.0
         self.card_focused = False
         self.outside_since = None
@@ -535,6 +538,49 @@ class Engine:
                 winreg.SetValueEx(key, 'MaeveT3Voice', 0, winreg.REG_SZ, self.startup_command())
         self.startup_cached = None
 
+    # ----- audio devices -----
+    def device_index(self, kind):
+        name = self.mic_device if kind == 'input' else self.speaker_device
+        try:
+            return resolve_audio_device(name, sd.query_devices(), sd.query_hostapis(), kind)
+        except Exception:
+            return None
+
+    def audio_devices(self):
+        devices, hostapis = sd.query_devices(), sd.query_hostapis()
+        listed = lambda kind: [{'name': n, 'label': l} for n, l in audio_device_choices(devices, hostapis, kind)]
+        return {'inputs': listed('input'), 'outputs': listed('output'),
+                'mic': self.mic_device, 'speaker': self.speaker_device}
+
+    def set_mic_device(self, name):
+        with self.lock:
+            self.mic_device = name or ''
+            self.prefs.set('micDevice', self.mic_device)
+            if self.mic_stream is not None:      # reopen on the new device if the meter is running
+                self.mic_stream.abort()
+                self.mic_stream.close()
+                self.mic_stream = None
+                self.update_mic()
+
+    def set_speaker_device(self, name):
+        with self.lock:
+            previous = self.speaker_device
+            self.speaker_device = name or ''
+            if self.audio is None:
+                self.prefs.set('speakerDevice', self.speaker_device)
+                return
+            self.stop()
+            try:
+                fresh = ContinuousAudio(device=self.device_index('output'))
+            except Exception as exc:
+                self.speaker_device = previous
+                self.meta['speakerError'] = type(exc).__name__
+                return
+            old, self.audio = self.audio, fresh
+            old.close()
+            self.prefs.set('speakerDevice', self.speaker_device)
+            self.cue([523, 659], 60)               # a short chime on the new speaker
+
     def toggle_voice_fx(self):
         with self.lock:
             self.voice_fx = not self.voice_fx
@@ -602,7 +648,7 @@ class Engine:
         self.listening = False
         want = self.ready and self.dictating
         if want and self.mic_stream is None:
-            self.mic_stream = sd.RawInputStream(samplerate=RATE, channels=1, dtype='int16',
+            self.mic_stream = sd.RawInputStream(samplerate=RATE, channels=1, dtype='int16', device=self.device_index('input'),
                                                 blocksize=FRAME, latency='low', callback=self.mic_callback)
             self.mic_stream.start()
         elif not want and self.mic_stream is not None:
@@ -794,7 +840,10 @@ class Engine:
             with tts.stream('Ready.', voice='Maeve') as warmup:
                 for _ in warmup:
                     pass
-            self.audio = ContinuousAudio()
+            try:
+                self.audio = ContinuousAudio(device=self.device_index('output'))
+            except Exception:
+                self.audio = ContinuousAudio()      # saved speaker unavailable: use the system default
             self.notice.put(('ready', None))
             while not self.quit.is_set():
                 try:
@@ -1148,6 +1197,9 @@ class Engine:
         """Close the settings card when the user clicks another window, or leaves it for 2.5 s."""
         if not (self.expanded and self.hwnd) or self.review or now - self.expanded_at < 0.8:
             return
+        if self.choosing_delivery:
+            self.outside_since = None
+            return
         foreground = user32.GetForegroundWindow()
         ours = foreground == self.hwnd or user32.GetAncestor(foreground, 3) == self.hwnd  # GA_ROOTOWNER
         if ours:
@@ -1301,7 +1353,17 @@ class Api:
     def toggle_voice_fx(self):
         self._engine.toggle_voice_fx()
 
-    def poll(self):
+    def audio_devices(self):
+        return self._engine.audio_devices()
+
+    def set_mic_device(self, name):
+        self._engine.set_mic_device(name)
+
+    def set_speaker_device(self, name):
+        self._engine.set_speaker_device(name)
+
+    def poll(self, choosing_delivery=False):
+        self._engine.choosing_delivery = bool(choosing_delivery)
         return self._engine.snapshot()
 
     def select(self, thread):

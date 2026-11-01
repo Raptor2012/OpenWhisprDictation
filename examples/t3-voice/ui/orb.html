@@ -258,13 +258,15 @@ void main(){
       vec3 hue = k == 0 ? uC : k == 1 ? uB : k == 2 ? mix(uB, uC, 0.55) : mix(uA, uC, 0.7);
       glow += hue * g * (0.62 + 0.55*uLevel);
     }
-    vec3 body = vec3(1.0) - exp(-glow * 1.35);       // soft tone map: highlights roll off smoothly
+    vec3 body = 0.9 * (vec3(1.0) - exp(-glow * 1.05)); // soft tone map that keeps colour in the highlights
     body *= 0.72 + 0.38*z;
     vec3 L = normalize(vec3(-0.5, 0.72, 0.6));
     float fres = pow(1.0 - max(0.0, n.z), 3.0);
     vec3 H = normalize(L + vec3(0.0, 0.0, 1.0));
-    float spec = pow(max(0.0, dot(n, H)), 160.0) * 0.75 + pow(max(0.0, dot(n, H)), 12.0) * 0.12;
-    vec3 c = body + uC * fres * 0.55 + vec3(spec);
+    float spec = pow(max(0.0, dot(n, H)), 200.0) * 0.5 + pow(max(0.0, dot(n, H)), 14.0) * 0.05;
+    vec3 c = body + mix(uB, uC, 0.5) * fres * 0.42 + mix(vec3(1.0), uC, 0.45) * spec;
+    float lum = dot(c, vec3(0.299, 0.587, 0.114));
+    c = mix(vec3(lum), c, 1.18);                      // a touch more colour, a touch less white
     c += uB * 0.10 * max(0.0, -n.y) * (1.0 - fres);  // faint bounce light from below
     float desat = dot(c, vec3(0.299,0.587,0.114));
     c = mix(c, vec3(desat)*0.9, uOff*0.75);

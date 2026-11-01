@@ -9,8 +9,24 @@ import re
 import struct
 import subprocess
 import threading
+from urllib.parse import urlsplit, unquote
 
 from live_reader_core import MessageFeed, Message, clean_prose
+
+
+def parse_thread_url(url, environment):
+    """Exact local T3 desktop route; decode each path component once, as the router does."""
+    try:
+        parsed = urlsplit(url)
+        if parsed.scheme != 't3code' or parsed.netloc != 'app' or not environment:
+            return None
+        parts = parsed.fragment.split('?', 1)[0].split('/')
+        if len(parts) != 3 or parts[0] or unquote(parts[1]) != environment:
+            return None
+        thread = unquote(parts[2])
+        return thread if thread and thread not in ('settings', 'new') else None
+    except (ValueError, TypeError):
+        return None
 
 
 @dataclass(frozen=True)

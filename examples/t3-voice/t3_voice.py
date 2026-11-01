@@ -8,6 +8,7 @@ import math
 import os
 from pathlib import Path
 import queue
+import sqlite3
 import sys
 import threading
 import time
@@ -30,14 +31,14 @@ from diagnostics import write_status
 from live_reader import ContinuousAudio
 from live_reader_core import Message
 from t3_voice_core import (DictationWatch, OpenWhisprFeed, Routes, StreamingFeed, UtteranceGate, cleanup_text,
-                           list_threads, parse_hotkey, read_env, send_message, transcribe)
+                           list_threads, parse_hotkey, parse_thread_url, read_env, send_message, transcribe)
 
 ROOT = Path(__file__).resolve().parent
 DB = Path.home() / '.t3/userdata/statev2.sqlite'
 RATE = 16000
 FRAME = 320  # 20 ms at 16 kHz
-COMPACT, BUBBLE, CARD = (180, 150), (340, 300), (320, 296)
-BAR, BAR_BUBBLE, BAR_CARD = (200, 48), (340, 214), (320, 196)   # toolbar mode
+COMPACT, BUBBLE, CARD = (180, 150), (340, 300), (320, 336)
+BAR, BAR_BUBBLE, BAR_CARD = (200, 48), (340, 214), (320, 236)   # toolbar mode
 OPENWHISPR_ENV = Path(os.environ.get('APPDATA', '')) / 'OpenWhisprDictation/.env'
 LINGER = 1.2        # seconds the orb stays after the last reason to show it
 FADE = 0.5          # seconds for the exit animation before the window is hidden
@@ -165,6 +166,7 @@ class Engine:
         self.hwnd = None
         self.size = COMPACT
         self.expanded = False
+        self.panel_extra = False
         self.hovered = False
         self.visible = False
         self.show_until = 0.0
@@ -198,6 +200,12 @@ class Engine:
         self.dict_quiet_until = 0.0
         self.dict_watch = DictationWatch()
         self.listening = False
+        self.follow_active = bool(self.prefs.get('followActive', True))
+        self.active_thread = None
+        self.capture_ticket = None
+        self.delivery = self.prefs.get('delivery', 'immediate')
+        self.review = None
+        self.review_seq = 0
         self.read_openwhispr_settings()
         self.meta = {'pid': os.getpid(), 'state': 'loading', 'voice': 'Maeve', 'model': 'Phonon 31M',
                      'asr': 'parakeet-0.6b via sherpa ws:6006', 'chunksSpoken': 0, 'utterancesSent': 0,
@@ -207,7 +215,7 @@ class Engine:
         if initial is None and self.threads:
             initial = self.threads[0]['id']
         if initial:
-            self.select(initial)
+            self.select(initial, automatic=True)
         threading.Thread(target=self.synthesize, daemon=True).start()
         threading.Thread(target=self.hotkey, daemon=True).start()
         threading.Thread(target=self.loop, daemon=True).start()
@@ -222,7 +230,134 @@ class Engine:
         return 'ready' if self.voice_on() else 'off'
 
     def voice_on(self):
+        if self.follow_active and self.active_thread is None:
+            return False
         return bool(self.thread and self.routes.preferences.get(self.thread, False))
+
+    def watch_active_thread(self):
+        """Read only the T3 document URL. UI Automation stays off the audio and engine threads."""
+        try:
+            import clr
+            wpf = Path(os.environ.get('WINDIR', 'C:/Windows')) / 'Microsoft.NET/Framework64/v4.0.30319/WPF'
+            clr.AddReference(str(wpf / 'UIAutomationClient.dll'))
+            clr.AddReference(str(wpf / 'UIAutomationTypes.dll'))
+            from System import IntPtr
+            from System.Windows.Automation import AutomationElement, ControlType, PropertyCondition, TreeScope, ValuePattern
+            environment = (Path.home() / '.t3/userdata/environment-id').read_text().strip()
+            condition = PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Document)
+            while not self.quit.wait(.12):
+                target = None
+                try:
+                    hwnd = find_t3_window()
+                    if hwnd:
+                        root = AutomationElement.FromHandle(IntPtr(hwnd))
+                        docs = root.FindAll(TreeScope.Descendants, condition)
+                        for doc in docs:
+                            pattern = doc.GetCurrentPattern(ValuePattern.Pattern)
+                            thread = parse_thread_url(str(pattern.Current.Value), environment)
+                            if thread:
+                                with sqlite3.connect(DB.resolve().as_uri() + '?mode=ro', uri=True, timeout=.05) as db:
+                                    row = db.execute('SELECT thread_id,title FROM orchestration_v2_projection_threads '
+                                                     'WHERE thread_id=? AND deleted_at IS NULL AND archived_at IS NULL',
+                                                     (thread,)).fetchone()
+                                if row:
+                                    target = {'id': row[0], 'title': row[1]}
+                                    break
+                    self.notice.put(('active-thread', target))
+                except Exception as exc:
+                    self.notice.put(('active-thread-error', type(exc).__name__))
+        except Exception as exc:
+            self.notice.put(('active-thread-error', type(exc).__name__))
+
+    def follow_tick(self):
+        if not self.follow_active or not self.active_thread or self.active_thread['id'] == self.thread:
+            return
+        if (self.review or self.dict_state in ('dictating', 'processing') or self.pending
+                or self.state in ('hearing', 'transcribing', 'sending')
+                or getattr(getattr(self, 'gate', None), 'frames', None) is not None):
+            return
+        self.select(self.active_thread['id'], automatic=True)
+
+    def toggle_follow_active(self):
+        with self.lock:
+            self.follow_active = not self.follow_active
+            self.prefs.set('followActive', self.follow_active)
+            self.follow_tick()
+            self.update_mic()
+
+    def set_delivery(self, mode):
+        if mode in ('immediate', 'review', 'composer'):
+            with self.lock:
+                self.delivery = mode
+                self.prefs.set('delivery', mode)
+
+    def set_review_focus(self, active):
+        if not self.window or not self.hwnd:
+            return
+        from System.Windows.Forms import MethodInvoker
+        def apply():
+            self.window.focus = active
+            style = user32.GetWindowLongW(self.hwnd, -20)
+            user32.SetWindowLongW(self.hwnd, -20, style & ~0x08000000 if active else style | 0x08000000)
+            if active:
+                self.window.native.Activate()
+                self.window.native.browser.webview.Focus()
+        self.window.native.BeginInvoke(MethodInvoker(apply))
+
+    def confirm_review(self, review_id, text):
+        with self.lock:
+            if not self.review or self.review['id'] != review_id or not text.strip():
+                return
+            draft, self.review = self.review, None
+            self.set_review_focus(False)
+            self.set_state('sending')
+            self.update_mic()
+            self.dispatch(text.strip(), draft['ticket'], draft['asr'], draft['started'], approved=True)
+
+    def cancel_review(self):
+        with self.lock:
+            self.review = None
+            self.set_review_focus(False)
+            self.set_state(self.idle_state())
+            self.update_mic()
+
+    def draft_in_composer(self, ticket, text):
+        """Semantic accessibility edit, never keystrokes or a clipboard paste into an arbitrary app."""
+        from System import IntPtr
+        from System.Windows.Automation import AutomationElement, ControlType, PropertyCondition, TreeScope, ValuePattern
+        hwnd = find_t3_window()
+        if not hwnd:
+            raise RuntimeError('Open the destination thread in T3 to insert a draft.')
+        root = AutomationElement.FromHandle(IntPtr(hwnd))
+        docs = root.FindAll(TreeScope.Descendants, PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Document))
+        environment = (Path.home() / '.t3/userdata/environment-id').read_text().strip()
+        for doc in docs:
+            url = str(doc.GetCurrentPattern(ValuePattern.Pattern).Current.Value)
+            if parse_thread_url(url, environment) != ticket.thread:
+                continue
+            edits = doc.FindAll(TreeScope.Descendants, PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Edit))
+            editors = [edit for edit in edits if 'composer-tiptap' in str(edit.Current.ClassName).split()]
+            if len(editors) != 1:
+                break
+            editor = editors[0]
+            value = editor.GetCurrentPattern(ValuePattern.Pattern)
+            previous = str(value.Current.Value)
+            if self.mode == 'openwhispr' and previous.rstrip().endswith(text):
+                return  # OpenWhispr may already have pasted this dictation into the composer.
+            if not previous.strip():
+                previous = ''
+            draft = (previous + '\n\n' if previous else '') + text
+            # Recheck both route and user mute/selection before the mutation.
+            if (parse_thread_url(str(doc.GetCurrentPattern(ValuePattern.Pattern).Current.Value), environment) != ticket.thread
+                    or not self.routes.current(ticket)):
+                break
+            value.SetValue(draft)
+            if str(value.Current.Value).strip().replace('\r\n', '\n') != draft.strip().replace('\r\n', '\n'):
+                raise RuntimeError('T3 did not confirm the draft text. Nothing was sent.')
+            if user32.GetForegroundWindow() == hwnd:
+                editor.SetFocus()
+            return
+        raise RuntimeError('Open the captured destination thread in T3 first. Nothing was sent.')
 
     def cue(self, steps, ms=70):
         if self.audio:
@@ -236,6 +371,11 @@ class Engine:
             hint = "OpenWhispr's hotkey dictates into this thread. Keep T3's composer unfocused."
         else:
             hint = self.detail or 'Stop: Ctrl+Alt+M or Esc. Headphones recommended.'
+        if self.follow_active:
+            routing_hint = 'Following open T3 thread' if self.active_thread else 'Open a local T3 thread to speak to it'
+            hint = (self.detail + ' · ' if self.detail else '') + routing_hint
+        else:
+            hint = 'Pinned thread · ' + hint
         if self.startup_cached is None:
             self.startup_cached = self.startup_enabled()
         show_bubble = self.bubble is not None and time.monotonic() < self.bubble_until and self.t3_min and not self.expanded
@@ -249,14 +389,28 @@ class Engine:
                 'openwhispr': self.openwhispr.available(), 'visible': self.visible,
                 'micMuted': self.mic_muted, 'maeveMuted': self.maeve_muted, 'dock': self.dock,
                 'hidePill': self.hide_pill, 'dictKey': self.prefs.get('dictKeyLabel', ''),
+                'followActive': self.follow_active,
+                'delivery': self.delivery,
+                'review': {key: self.review[key] for key in ('id', 'text', 'title')} if self.review else None,
                 'bubble': self.bubble if show_bubble else None}
 
     # ----- routing -----
-    def select(self, thread):
+    def select(self, thread, automatic=False):
         with self.lock:
+            had_thread = self.thread is not None
+            enabled = bool(self.thread and self.routes.preferences.get(self.thread, False))
+            if not automatic:
+                if self.review:
+                    self.cancel_review()
+                self.follow_active = False
+                self.prefs.set('followActive', False)
             self.stop()
             self.thread = thread
             self.routes.select(thread)
+            if automatic and had_thread:
+                self.routes.enable(enabled)
+            if self.active_thread and not any(t['id'] == thread for t in self.threads):
+                self.threads.insert(0, dict(self.active_thread))
             self.feed = StreamingFeed(DB, thread)
             self.prefs.set('thread', thread)
             self.meta['threadId'] = thread
@@ -380,7 +534,7 @@ class Engine:
 
     # ----- speech in -----
     def update_mic(self):
-        self.listening = self.ready and self.voice_on() and self.mode == 'handsfree' and not self.mic_muted
+        self.listening = self.ready and self.voice_on() and self.mode == 'handsfree' and not self.mic_muted and not self.review
         want = self.listening or (self.ready and self.dictating)
         if want and self.mic_stream is None:
             self.vad = webrtcvad.Vad(3)
@@ -410,12 +564,13 @@ class Engine:
             voiced = False
         for kind, audio in self.gate.push(frame, voiced):
             if kind == 'start':
+                self.capture_ticket = self.routes.ticket()
                 self.notice.put(('speech-start', None))
                 continue
             if kind == 'confirm':
                 self.notice.put(('speech-confirmed', None))
                 continue
-            ticket = self.routes.ticket()
+            ticket, self.capture_ticket = self.capture_ticket, None
             if ticket is None or self.gate.last_voiced < self.gate.confirm_frames:
                 self.notice.put(('discarded', 'noise' if ticket else 'voice off'))
                 continue
@@ -451,13 +606,25 @@ class Engine:
                             'deadline': time.monotonic() + self.HOLD_SECONDS}
             self.set_state('ready', '…')
 
-    def dispatch(self, text, ticket, asr_ms, started):
-        threading.Thread(target=self.deliver_text, args=(text, ticket, asr_ms, started), daemon=True).start()
+    def dispatch(self, text, ticket, asr_ms, started, approved=False):
+        threading.Thread(target=self.deliver_text, args=(text, ticket, asr_ms, started, approved), daemon=True).start()
 
-    def deliver_text(self, text, ticket, asr_ms, started):
+    def deliver_text(self, text, ticket, asr_ms, started, approved=False):
         try:
-            if self.cleanup:
+            if self.cleanup and not approved:
                 text = cleanup_text(text)
+            if not self.routes.current(ticket):
+                self.notice.put(('discarded', 'target changed'))
+                return
+            if self.follow_active and not approved and (not self.active_thread or self.active_thread['id'] != ticket.thread):
+                raise RuntimeError('The open T3 thread changed during capture. Please speak again for the new thread.')
+            if self.delivery == 'review' and not approved:
+                self.notice.put(('review', (text, ticket, asr_ms, started)))
+                return
+            if self.delivery == 'composer' and not approved:
+                self.draft_in_composer(ticket, text)
+                self.notice.put(('drafted', None))
+                return
             self.notice.put(('sending', None))
             send_message(ticket.thread, text)
             self.notice.put(('you', text))
@@ -596,7 +763,39 @@ class Engine:
         try:
             while True:
                 kind, value = self.notice.get_nowait()
-                if kind == 'ready':
+                if kind == 'review':
+                    text, ticket, asr, started = value
+                    if self.routes.current(ticket):
+                        self.review_seq += 1
+                        self.review = {'id': self.review_seq, 'text': text, 'ticket': ticket, 'asr': asr,
+                                       'started': started, 'title': next((t['title'] for t in self.threads if t['id'] == ticket.thread), '')}
+                        self.expanded = False
+                        self.confirmed = False
+                        self.set_state('reviewing')
+                        self.update_mic()
+                        if self.hwnd:
+                            self.place(self.target_size())
+                            user32.ShowWindowAsync(self.hwnd, SW_SHOWNOACTIVATE)
+                            self.visible = True
+                            self.set_review_focus(True)
+                elif kind == 'drafted':
+                    self.confirmed = False
+                    self.set_state(self.idle_state(), 'Draft ready · press Enter in T3')
+                    self.pin_until = time.monotonic() + 5
+                elif kind == 'active-thread':
+                    changed = self.active_thread != value
+                    self.active_thread = value
+                    self.meta.pop('activeThreadError', None)
+                    if changed and self.follow_active:
+                        self.update_mic()
+                        if self.ready and self.state in ('off', 'ready'):
+                            self.set_state(self.idle_state())
+                elif kind == 'active-thread-error':
+                    self.active_thread = None
+                    self.meta['activeThreadError'] = value
+                    if self.follow_active:
+                        self.update_mic()
+                elif kind == 'ready':
                     self.ready = True
                     if self.feed:
                         self.feed.discard_pending()
@@ -714,6 +913,10 @@ class Engine:
             self.meta['connectionError'] = type(exc).__name__
         self.meta['updatedAt'] = time.time()
         self.meta['mode'] = self.mode
+        self.follow_tick()
+        self.meta.update(followActive=self.follow_active,
+                         activeThreadId=self.active_thread['id'] if self.active_thread else None)
+        self.meta.update(delivery=self.delivery, reviewPending=bool(self.review))
         self.meta.update(dock=self.dock, dictationState=self.dict_state, hidePill=self.hide_pill)
         if self.audio:
             self.meta.update(playedSamples=self.audio.played_samples, outputUnderflows=self.audio.output_underflows)
@@ -765,13 +968,18 @@ class Engine:
 
     # ----- desktop: T3 state, visibility, placement -----
     def target_size(self):
+        if self.review:
+            return BAR_BUBBLE if self.dock else BUBBLE
+        if self.expanded:
+            base = BAR_CARD if self.dock else CARD
+            return (base[0], base[1] + (120 if self.panel_extra else 0))
         bubble = self.t3_min and self.bubble is not None and time.monotonic() < self.bubble_until
         if self.dock:
             return BAR_CARD if self.expanded else BAR_BUBBLE if bubble else BAR
         return CARD if self.expanded else BUBBLE if bubble else COMPACT
 
     def wants_visible(self, now):
-        if self.dock or self.dict_state or self.expanded or self.hovered or now < self.pin_until or self.pending:
+        if self.review or self.dock or self.dict_state or self.expanded or self.hovered or now < self.pin_until or self.pending:
             return True
         state = self.state
         if state in ('speaking', 'reading', 'transcribing', 'sending'):
@@ -848,6 +1056,8 @@ class Engine:
     def attach(self, hwnd):
         """Called once the native window exists: position it on the saved anchor or the work-area corner."""
         self.hwnd = hwnd
+        # pywebview must initialize pythonnet first; concurrent clr imports can break its startup.
+        threading.Thread(target=self.watch_active_thread, daemon=True).start()
         saved = self.prefs.get('anchor')
         if not (saved and user32.MonitorFromPoint(wintypes.POINT(saved[0], saved[1] - 20), 0)):
             area = wintypes.RECT()
@@ -865,8 +1075,16 @@ class Engine:
         if self.hwnd is None or expanded == self.expanded:
             return
         self.expanded = expanded
+        if not expanded:
+            self.panel_extra = False
         self.show_until = time.monotonic() + LINGER
         self.place(self.target_size())
+
+    def set_panel_extra(self, extra):
+        with self.lock:
+            self.panel_extra = bool(extra)
+            if self.hwnd:
+                self.place(self.target_size())
 
     def close(self):
         self.quit.set()
@@ -899,6 +1117,21 @@ class Api:
 
     def toggle_voice(self):
         self._engine.toggle_voice()
+
+    def toggle_follow_active(self):
+        self._engine.toggle_follow_active()
+
+    def set_delivery(self, mode):
+        self._engine.set_delivery(mode)
+
+    def set_panel_extra(self, extra):
+        self._engine.set_panel_extra(extra)
+
+    def confirm_review(self, review_id, text):
+        self._engine.confirm_review(review_id, text)
+
+    def cancel_review(self):
+        self._engine.cancel_review()
 
     def toggle_mode(self):
         self._engine.toggle_mode()

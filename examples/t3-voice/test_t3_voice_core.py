@@ -7,6 +7,19 @@ from unittest.mock import patch
 
 import test_live_reader
 from t3_voice_core import DictationWatch, McpSender, OpenWhisprFeed, parse_hotkey, Routes, StreamingFeed, UtteranceGate, send_message_cli
+from t3_voice_core import parse_thread_url
+
+
+class ActiveThreadTests(unittest.TestCase):
+    def test_exact_local_route_and_once_encoded_thread_id(self):
+        self.assertEqual('abc', parse_thread_url('t3code://app/#/local/abc', 'local'))
+        self.assertEqual('thread:task%3Aid', parse_thread_url('t3code://app/#/local/thread%3Atask%253Aid', 'local'))
+
+    def test_non_thread_and_foreign_routes_are_rejected(self):
+        for url in ('t3code://app/#/local', 't3code://app/#/settings/general',
+                    't3code://app/#/remote/abc', 'https://evil/#/local/abc',
+                    't3code://app/#/local/abc/extra', ''):
+            self.assertIsNone(parse_thread_url(url, 'local'), url)
 
 
 class RouteTests(unittest.TestCase):

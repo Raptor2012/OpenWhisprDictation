@@ -81,6 +81,15 @@
   /* settings card */
   #card { position:absolute; left:12px; right:12px; top:10px; bottom:150px; background:var(--glass); backdrop-filter:blur(18px) saturate(1.3); border:1px solid var(--line); border-radius:20px; padding:10px 12px 10px; box-sizing:border-box; opacity:0; transform:translateY(14px) scale(.94); transform-origin:50% 100%; transition:opacity .25s ease, transform .45s var(--spring); pointer-events:none; box-shadow:0 12px 40px rgba(0,0,0,.45); }
   #card.open { opacity:1; transform:none; pointer-events:auto; }
+  #delivery { width:100%; box-sizing:border-box; margin-top:7px; padding:5px 8px; border-radius:9px; border:1px solid var(--line); background:#292b34; color:var(--fg); font:11.5px "Segoe UI",sans-serif; }
+  #review { display:none; position:absolute; left:50%; bottom:112px; width:300px; margin-left:-150px; box-sizing:border-box; padding:11px 13px; border-radius:18px; background:var(--glass); border:1px solid var(--line); backdrop-filter:blur(20px); box-shadow:0 12px 35px rgba(0,0,0,.35); }
+  #review.show { display:block; animation:barIn .35s var(--spring); }
+  body.bar #review { bottom:56px; }
+  #reviewTitle { font-size:10px; color:#c4a8ff; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; margin-bottom:5px; }
+  #reviewText { width:100%; height:70px; resize:none; border:0; outline:none; background:transparent; color:var(--fg); font:13px/1.4 "Segoe UI",sans-serif; box-sizing:border-box; user-select:text; -webkit-user-select:text; }
+  #review .foot { margin-top:5px; }
+  #review button { border:0; border-radius:9px; padding:5px 9px; background:rgba(139,114,255,.25); color:var(--fg); cursor:pointer; }
+  body.reviewing #bubble { display:none; }
   .thread { display:flex; align-items:center; gap:8px; font-size:12.5px; cursor:pointer; padding:6px 8px; border-radius:10px; }
   .thread:hover { background:rgba(255,255,255,.06); }
   .thread .t { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
@@ -119,13 +128,24 @@
       <div class="pill danger" id="pStop">Stop</div>
     </div>
     <div id="detail"></div>
+    <select id="delivery" title="Choose how your transcript is delivered" aria-label="Transcript delivery">
+      <option value="immediate">Send immediately</option>
+      <option value="review">Review above the orb · Enter to send</option>
+      <option value="composer">Draft in T3 · Enter there to send</option>
+    </select>
     <div class="foot"><span id="fTest">Test Maeve</span><span id="fMore">Options ⋯</span><span id="fQuit">Quit</span></div>
     <div id="menu">
+      <div id="mFollow">Follow active T3 thread</div>
       <div id="mCleanup">Clean up with OpenWhispr's model</div>
       <div id="mStartup">Start with Windows</div>
       <div id="mDock">Minimize to toolbar</div>
       <div id="mPill">Hide OpenWhispr's own pill</div>
     </div>
+  </div>
+  <div id="review">
+    <div id="reviewTitle"></div>
+    <textarea id="reviewText" aria-label="Review transcript" placeholder="Review your words…"></textarea>
+    <div class="foot"><span id="reviewCancel">Cancel · Esc</span><span>Shift+Enter: new line</span><button id="reviewSend">Send ↵</button></div>
   </div>
   <div id="orbwrap">
     <canvas id="orb"></canvas>
@@ -256,6 +276,7 @@ const PAL = {
   stopped:{a:[.18,.19,.24], b:[.40,.42,.50], c:[.68,.70,.76], glow:.3},
   dictating:{a:[.10,.30,.52], b:[.52,.84,1.0], c:[.92,.98,1.0], glow:.95},
   processing:{a:[.04,.28,.40], b:[.24,.72,.86], c:[.70,.96,1.0], glow:.75},
+  reviewing:{a:[.20,.08,.36], b:[.52,.34,.86], c:[.84,.76,.98], glow:.6},
   done:   {a:[.04,.34,.16], b:[.24,.86,.46], c:[.78,1.0,.84], glow:1.0},
   failed: {a:[.40,.06,.08], b:[1.0,.30,.32], c:[1.0,.72,.70], glow:.9},
   error:  {a:[.40,.06,.08], b:[1.0,.30,.32], c:[1.0,.72,.70], glow:.9}
@@ -399,7 +420,19 @@ function tickBubble(dt){
 const cap = document.getElementById('cap'), card = document.getElementById('card'), badge = document.getElementById('badge');
 const muteMic = document.getElementById('muteMic'), muteMaeve = document.getElementById('muteMaeve');
 const barMic = document.getElementById('barMic'), barMaeve = document.getElementById('barMaeve');
+const reviewEl = document.getElementById('review'), reviewText = document.getElementById('reviewText');
+let reviewId = null;
 function render(){
+  document.body.classList.toggle('reviewing', !!S.review);
+  reviewEl.classList.toggle('show', !!S.review);
+  if (S.review && S.review.id !== reviewId) {
+    reviewId = S.review.id;
+    reviewText.value = S.review.text;
+    document.getElementById('reviewTitle').textContent = 'To: ' + (S.review.title || S.threadTitle || 'selected thread');
+    document.getElementById('reviewSend').disabled = false;
+    setTimeout(()=>{ if(S.review) { reviewText.focus(); reviewText.setSelectionRange(reviewText.value.length, reviewText.value.length); } }, 80);
+  } else if (!S.review) reviewId = null;
+  document.getElementById('delivery').value = S.delivery || 'immediate';
   const label = S.text || LABEL[S.state] || '';
   cap.textContent = label;
   cap.classList.toggle('show', !!label && S.visible && !S.bubble && !hovering && !expanded);
@@ -413,15 +446,19 @@ function render(){
   badge.textContent = S.micMuted && S.maeveMuted ? 'mic · voice off' : S.micMuted ? 'mic off' : S.maeveMuted ? 'voice off' : '';
   badge.classList.toggle('show', !!badge.textContent && S.visible);
   document.getElementById('threadName').textContent = S.threadTitle || 'Choose a thread';
+  document.getElementById('threadBtn').title = (S.followActive ? 'Following T3 · ' : 'Pinned · ') + (S.threadTitle || 'Choose a thread');
+  document.getElementById('barOrb').title = document.getElementById('threadBtn').title;
+  document.getElementById('mFollow').classList.toggle('on', !!S.followActive);
   const pv = document.getElementById('pVoice'); pv.textContent = S.voiceOn ? 'Voice on' : 'Voice off'; pv.classList.toggle('on', S.voiceOn);
   document.getElementById('pMode').textContent = S.mode==='handsfree' ? 'Hands-free mic' : 'OpenWhispr hotkey';
   document.getElementById('detail').textContent = S.detail || '';
   document.getElementById('mCleanup').classList.toggle('on', S.cleanup);
   document.getElementById('mStartup').classList.toggle('on', S.startup);
   const list = document.getElementById('list');
-  if (list.dataset.n !== String(S.threads.length)) {
-    list.innerHTML = ''; list.dataset.n = S.threads.length;
-    for (const t of S.threads) { const d = document.createElement('div'); d.textContent = t.title || '(untitled)'; d.title = t.id; d.onclick = (e)=>{ e.stopPropagation(); list.classList.remove('open'); api('select', t.id); }; list.appendChild(d); }
+  const threadKeys = JSON.stringify(S.threads);
+  if (list.dataset.n !== threadKeys) {
+    list.innerHTML = ''; list.dataset.n = threadKeys;
+    for (const t of S.threads) { const d = document.createElement('div'); d.textContent = t.title || '(untitled)'; d.title = t.id; d.onclick = (e)=>{ e.stopPropagation(); list.classList.remove('open'); panelExtra(); api('select', t.id); }; list.appendChild(d); }
   }
 }
 const Q = new URLSearchParams(location.search), DEMO = Q.get('demo');
@@ -439,10 +476,12 @@ if (DEMO) {
   setInterval(()=>{ const t = Date.now(); S.mic = .12 + .22*Math.abs(Math.sin(t/95)) * (0.5+0.5*Math.sin(t/700)); S.out = .10 + .22*Math.abs(Math.sin(t/70)) * (0.5+0.5*Math.sin(t/500)); render(); }, 50);
   if (!seq.includes(DEMO)) setInterval(()=>{ i=(i+1)%seq.length; S.state=seq[i]; S.voiceOn = S.state!=='off'; }, 1800);
   if (Q.get('card')) { expanded = true; card.classList.add('open'); }
+  if (Q.get('review')) { S.state='reviewing'; S.review={id:1,text:'Please check why the Windows build failed and fix the cause.',title:S.threadTitle}; }
 } else {
   window.addEventListener('pywebviewready', poll);
 }
-function setExpanded(v){ if (expanded===v) return; expanded = v; card.classList.toggle('open', v); if(!v){document.getElementById('list').classList.remove('open'); document.getElementById('menu').classList.remove('open');} api('set_expanded', v); }
+function setExpanded(v){ if (S.review || expanded===v) return; expanded = v; card.classList.toggle('open', v); if(!v){document.getElementById('list').classList.remove('open'); document.getElementById('menu').classList.remove('open');} api('set_expanded', v); }
+function panelExtra(){ api('set_panel_extra', document.getElementById('list').classList.contains('open') || document.getElementById('menu').classList.contains('open')); }
 function setHover(v){ if (hovering===v) return; hovering = v; document.body.classList.toggle('hover', v); api('set_hover', v); render(); }
 document.getElementById('orbwrap').addEventListener('mouseenter', ()=> setHover(true));
 document.body.addEventListener('mouseleave', ()=> { setHover(false); setTimeout(()=>{ if(!document.matches(':hover')) setExpanded(false); }, 400); });
@@ -455,18 +494,30 @@ barMic.addEventListener('click', (e)=>{ e.stopPropagation(); S.micMuted = !S.mic
 barMaeve.addEventListener('click', (e)=>{ e.stopPropagation(); S.maeveMuted = !S.maeveMuted; render(); api('toggle_maeve_mute'); });
 document.getElementById('mDock').onclick = ()=> { document.getElementById('menu').classList.remove('open'); toggleDock(); };
 document.getElementById('mPill').onclick = ()=> api('toggle_hide_pill');
+document.getElementById('mFollow').onclick = ()=> { document.getElementById('menu').classList.remove('open'); panelExtra(); api('toggle_follow_active'); };
 muteMic.addEventListener('click', (e)=>{ e.stopPropagation(); S.micMuted = !S.micMuted; render(); api('toggle_mic_mute'); });
 muteMaeve.addEventListener('click', (e)=>{ e.stopPropagation(); S.maeveMuted = !S.maeveMuted; render(); api('toggle_maeve_mute'); });
-document.getElementById('threadBtn').onclick = ()=> document.getElementById('list').classList.toggle('open');
+document.getElementById('threadBtn').onclick = ()=> { document.getElementById('list').classList.toggle('open'); panelExtra(); };
 document.getElementById('pVoice').onclick = ()=> api('toggle_voice');
 document.getElementById('pMode').onclick = ()=> api('toggle_mode');
 document.getElementById('pStop').onclick = ()=> api('stop');
 document.getElementById('fTest').onclick = ()=> api('test_voice');
 document.getElementById('fQuit').onclick = ()=> api('quit');
-document.getElementById('fMore').onclick = (e)=>{ e.stopPropagation(); document.getElementById('menu').classList.toggle('open'); };
+document.getElementById('fMore').onclick = (e)=>{ e.stopPropagation(); document.getElementById('menu').classList.toggle('open'); panelExtra(); };
 document.getElementById('mCleanup').onclick = ()=> api('toggle_cleanup');
 document.getElementById('mStartup').onclick = ()=> api('toggle_startup');
-document.addEventListener('keydown', e=>{ if (e.key==='Escape') { if (expanded) setExpanded(false); else api('stop'); } });
+document.getElementById('delivery').onchange = e=> { S.delivery=e.target.value; api('set_delivery', S.delivery); };
+function sendReview(){ if (!S.review || !reviewText.value.trim() || document.getElementById('reviewSend').disabled) return; document.getElementById('reviewSend').disabled=true; api('confirm_review', S.review.id, reviewText.value); }
+document.getElementById('reviewSend').onclick = sendReview;
+document.getElementById('reviewCancel').onclick = ()=> api('cancel_review');
+document.addEventListener('keydown', e=>{
+  if (S.review && !e.isComposing && (e.key==='Escape' || (e.key==='Enter' && !e.shiftKey))) {
+    e.preventDefault(); e.stopPropagation();
+    if(e.key==='Enter') sendReview(); else api('cancel_review');
+    return;
+  }
+  if (e.key==='Escape') { if (expanded) setExpanded(false); else api('stop'); }
+});
 </script>
 </body>
 </html>

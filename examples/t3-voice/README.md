@@ -4,7 +4,7 @@ A small orb that gives one [T3 Code](https://t3.chat) thread a voice, fully loca
 
 The orb stays out of the way:
 
-- It appears only while you are speaking (after 140 ms of confirmed speech), while your words are transcribed and sent, and while Maeve speaks. It springs in, lingers about a second, then fades and the window is hidden. It never takes focus.
+- It appears only while you are speaking (after 140 ms of confirmed speech), while your words are transcribed and sent, and while Maeve speaks. It springs in, lingers about a second, then fades and the window is hidden. It only takes keyboard focus when you choose to review a transcript above the orb.
 - When T3 Code is minimized, a speech bubble rises above the orb and types out Maeve's reply at speaking pace, and briefly shows what you said, like a desktop pet.
 - Hover the orb for two buttons: mute your microphone, and mute Maeve. With Maeve muted and T3 minimized, replies still appear silently in the bubble.
 - Ctrl+Alt+M stops Maeve while she speaks; otherwise it summons the orb for a few seconds so you can click it for settings.
@@ -43,7 +43,17 @@ venv\Scripts\python pair_t3.py        # one-time: mints a 30-day local MCP token
 "Start Maeve T3 Voice.cmd"            # launches the panel without a console window
 ```
 
-Press Ctrl+Alt+M to summon the orb, click it, pick a thread, press **Voice on**, and talk. Stop with the Stop pill or Ctrl+Alt+M. Options holds **Clean up with OpenWhispr's model** (sends the transcript through OpenWhispr's local llama-server first; costs its cleanup latency) and **Start with Windows**.
+Press Ctrl+Alt+M to summon the orb, click it, press **Voice on**, and talk. By default it follows the thread currently open in the local T3 desktop app. It reads the exact document URL through Windows accessibility on a background worker, validates the thread in T3's read-only database, and never guesses from recent message activity. The card and mini-orb tooltip show the destination. If the open route cannot be resolved, automatic capture is disabled; the manual picker remains available.
+
+Choosing a thread in the existing picker pins that destination. **Options → Follow active T3 thread** resumes automatic following. The voice enable state carries across followed threads. Routing changes wait for the current recording/transcription/delivery or pending orb review; a detected change during capture rejects the transcript rather than sending to an unintended thread.
+
+Use the **Transcript delivery** dropdown in settings to choose:
+
+- **Send immediately** (default): send the transcript to the captured destination over local MCP.
+- **Review above the orb**: show an editable preview with its destination title. **Enter** sends once, **Shift+Enter** adds a line, and **Esc** or **Cancel** discards it. Hands-free capture pauses while the preview is open. The orb takes focus for this review only; the destination stays fixed until you send or cancel.
+- **Draft in T3**: append the transcript to the existing composer draft in the exact captured thread without submitting it. Press **Enter in T3** when ready. This uses the composer's accessibility value API, never simulated keys or an arbitrary clipboard paste. The destination must still be open in T3; a mismatch or inaccessible editor reports an error and sends nothing. Hands-free mode is recommended. In OpenWhispr hotkey mode, an already-pasted matching transcript is not appended twice.
+
+The follow, pin and delivery preferences survive restarts. Settings grow upward when the thread list or options menu opens. Stop with the Stop pill or Ctrl+Alt+M. Options also holds **Clean up with OpenWhispr's model** (adds its local cleanup latency) and **Start with Windows**.
 
 ## Files
 
@@ -55,7 +65,7 @@ Press Ctrl+Alt+M to summon the orb, click it, pick a thread, press **Voice on**,
 | `live_reader_core.py` | Read-only SQLite feed of T3 messages and Markdown-to-prose cleaning |
 | `live_reader.py` | Earlier reader; the panel reuses its persistent audio device |
 | `pair_t3.py` | Mints the MCP token through T3's pairing-code OAuth flow |
-| `test_*.py` | `python -m unittest test_orb_logic test_t3_voice_core test_live_reader -q` runs 35 tests (SQLite fixtures, hotkey parsing, dictation status, capture suppression, endpointing, toolbar sizing, visibility and bubble rules), no audio needed |
+| `test_*.py` | `python -m unittest test_orb_logic test_t3_voice_core test_live_reader -q` runs 47 tests (SQLite fixtures, exact desktop routes, following/pinning, review confirmation, composer draft guards, delivery modes, dictation, capture suppression, toolbar sizing, visibility and bubble rules), no audio needed |
 
 `t3-voice-token.txt`, settings, status and logs are git-ignored. The status file holds timings and counters only, never conversation text.
 

@@ -4,6 +4,7 @@ from contextlib import closing
 from dataclasses import dataclass
 from functools import lru_cache
 import json
+import numpy as np
 import os
 from pathlib import Path
 import re
@@ -45,6 +46,86 @@ def audio_feedback(pcm, sample_rate):
     return level,bands
 
 
+class VoiceFx:
+    """Streaming "FRIDAY" voice: a light two-voice chorus, a faint ring-modulated sheen and a short,
+    dark room reverb. Mono float audio in, same length out; chunked output equals one-shot output.
+
+    Numpy only: the reverb is an FFT convolution with a synthetic impulse response and an
+    overlap-add tail that carries across chunks (and across sentences of one reply).
+    """
+    def __init__(self, rate=24000, reverb=0.32, chorus=0.30, ring=0.07, ring_hz=72.0, seconds=0.55, seed=7):
+        self.rate, self.wet, self.chorus, self.ring, self.ring_hz = rate, reverb, chorus, ring, ring_hz
+        rng = np.random.default_rng(seed)
+        n = int(rate * seconds)
+        t = np.arange(n) / rate
+        ir = rng.standard_normal(n) * np.exp(-t / 0.085)
+        for delay, gain in ((0.009, 0.55), (0.017, -0.4), (0.026, 0.32), (0.038, -0.24)):  # early reflections
+            ir[int(delay * rate)] += gain * 4
+        ir[:int(0.004 * rate)] = 0.0                                  # 4 ms pre-delay keeps the voice clear
+        ir = np.convolve(ir, np.ones(8) / 8, mode='same')             # darker tail, no hiss
+        ir *= np.linspace(1.0, 0.0, n) ** 0.5                         # no click where the IR ends
+        self.ir = (ir / np.sqrt(np.sum(ir * ir))).astype(np.float32)
+        self.spectra = {}
+        self.history = np.zeros(int(0.03 * rate), np.float32)
+        self.reset()
+
+    def reset(self):
+        self.tail = np.zeros(len(self.ir) - 1, np.float32)
+        self.history[:] = 0.0
+        self.pos = 0
+        self.drained = 0
+        self.tail_live = False   # True from the first processed chunk until the tail is released
+
+    def _convolve(self, x):
+        size = 1 << int(np.ceil(np.log2(len(x) + len(self.ir) - 1)))
+        if size not in self.spectra:
+            self.spectra[size] = np.fft.rfft(self.ir, size)
+        return np.fft.irfft(np.fft.rfft(x, size) * self.spectra[size], size)[:len(x) + len(self.ir) - 1]
+
+    def process(self, chunk):
+        x = np.asarray(chunk, np.float32).reshape(-1)
+        n = len(x)
+        if n == 0:
+            return x
+        t = (self.pos + np.arange(n)) / self.rate
+        buf = np.concatenate([self.history, x])
+        at = len(self.history) + np.arange(n, dtype=np.float64)
+        grid = np.arange(len(buf))
+        d1 = (0.008 + 0.0022 * np.sin(2 * np.pi * 0.33 * t)) * self.rate
+        d2 = (0.0135 + 0.0028 * np.sin(2 * np.pi * 0.51 * t + 1.3)) * self.rate
+        voices = np.interp(at - d1, grid, buf) + np.interp(at - d2, grid, buf)
+        y = x + self.chorus * 0.5 * voices
+        y = y * (1.0 - self.ring + self.ring * np.sin(2 * np.pi * self.ring_hz * t))
+        wet = self._convolve(y)
+        wet[:len(self.tail)] += self.tail
+        self.tail = wet[n:].astype(np.float32)
+        self.history = buf[-len(self.history):].astype(np.float32)
+        self.pos += n
+        self.drained = 0
+        self.tail_live = True
+        return ((y + self.wet * wet[:n]) / (1.0 + self.chorus * 0.5)).astype(np.float32)
+
+    def drain(self, seconds=0.05, fade=0.35):
+        """Next slice of the reverb tail, faded over `fade` seconds since the last speech.
+        Unlike flush, the rest of the tail stays and blends into speech that starts meanwhile."""
+        n = int(seconds * self.rate)
+        part = self.tail[:n].copy()
+        self.tail = np.concatenate([self.tail[n:], np.zeros(len(part), np.float32)])
+        start = getattr(self, 'drained', 0)
+        gain = np.clip(1.0 - (start + np.arange(len(part))) / (fade * self.rate), 0.0, 1.0).astype(np.float32)
+        self.drained = start + len(part)
+        if self.drained >= fade * self.rate:
+            self.reset()
+        return (self.wet * part * gain / (1.0 + self.chorus * 0.5)).astype(np.float32)
+
+    def flush(self, seconds=0.35):
+        """The audible part of the reverb tail, faded out; the stream is then silent."""
+        n = min(len(self.tail), int(seconds * self.rate))
+        out = self.wet * self.tail[:n] * np.linspace(1.0, 0.0, n, dtype=np.float32) / (1.0 + self.chorus * 0.5)
+        self.reset()
+        return out.astype(np.float32)
+
+
 class DictationPreview:
     """Bounded, display-only audio snapshots. Release never waits for a preview job."""
     def __init__(self, sample_rate=16000, interval=1.1, window_seconds=6, min_seconds=.65):
@@ -64,6 +145,7 @@ class DictationPreview:
         with self.lock:
             self.session += 1
             self.active = True
+            self.inflight = None    # a request from the previous hold must not block this one
             self.audio.clear()
             self.new_voice = 0
             self.last_request = float('-inf')

@@ -6,7 +6,7 @@ import unittest
 from unittest.mock import patch
 
 import test_live_reader
-from t3_voice_core import DictationWatch, McpSender, OpenWhisprFeed, parse_hotkey, Routes, StreamingFeed, UtteranceGate, send_message_cli
+from t3_voice_core import VoiceFx, DictationWatch, McpSender, OpenWhisprFeed, parse_hotkey, Routes, StreamingFeed, UtteranceGate, send_message_cli
 from t3_voice_core import parse_thread_url
 
 
@@ -40,9 +40,9 @@ class DictationPreviewTests(unittest.TestCase):
         self.assertIsNone(preview.request(1))
         new = preview.start()
         preview.push(b'b'*8, voiced=True)
-        self.assertIsNone(preview.request(1))
-        self.assertIsNone(preview.complete(old,'late old words'))
+        # A new hold previews at once; the previous hold's request no longer blocks it.
         self.assertEqual((new,b'b'*8),preview.request(1))
+        self.assertIsNone(preview.complete(old,'late old words'))
         self.assertIsNone(preview.complete(old,'duplicate old result'))
         self.assertEqual('new words',preview.complete(new,'new words'))
 
@@ -275,3 +275,53 @@ class UtteranceTests(unittest.TestCase):
         gate = UtteranceGate(start_frames=3, silence_frames=4)
         for voiced in (True, False, True, False, False):
             self.assertEqual([], gate.push(b'x', voiced))
+
+
+class VoiceFxTests(unittest.TestCase):
+    def signal(self):
+        import numpy as np
+        t = np.arange(24000) / 24000
+        return (0.3 * np.sin(2 * np.pi * 220 * t) * (t < 0.6)).astype(np.float32)
+
+    def test_chunked_output_matches_one_shot(self):
+        import numpy as np
+        x = self.signal()
+        whole = VoiceFx().process(x)
+        fx = VoiceFx()
+        parts = np.concatenate([fx.process(x[i:i + 1777]) for i in range(0, len(x), 1777)])
+        self.assertEqual(len(x), len(parts))
+        self.assertLess(float(np.max(np.abs(whole - parts))), 1e-4)
+
+    def test_output_is_finite_and_not_clipping(self):
+        import numpy as np
+        y = VoiceFx().process(self.signal())
+        self.assertTrue(np.all(np.isfinite(y)))
+        self.assertLess(float(np.max(np.abs(y))), 0.95)
+        self.assertGreater(float(np.max(np.abs(y))), 0.1)
+
+    def test_tail_rings_after_speech_and_reset_silences_it(self):
+        import numpy as np
+        fx = VoiceFx()
+        fx.process(self.signal()[:9000])
+        tail = fx.flush()
+        self.assertGreater(float(np.max(np.abs(tail))), 1e-3)
+        self.assertLess(abs(float(tail[-1])), 1e-4)
+        self.assertEqual(0.0, float(np.max(np.abs(fx.flush()))))
+        fx.process(self.signal()[:9000]); fx.reset()
+        silence = fx.process(np.zeros(4000, np.float32))
+        self.assertEqual(0.0, float(np.max(np.abs(silence))))
+
+
+class VoiceFxDrainTests(unittest.TestCase):
+    def test_drain_releases_small_slices_then_ends(self):
+        import numpy as np
+        fx = VoiceFx()
+        t = np.arange(12000) / 24000
+        fx.process((0.3 * np.sin(2 * np.pi * 220 * t)).astype(np.float32))
+        slices = []
+        while fx.tail_live and len(slices) < 50:
+            slices.append(fx.drain(0.05))
+        self.assertEqual(7, len(slices))
+        self.assertTrue(all(len(s) == 1200 for s in slices))
+        self.assertGreater(float(np.max(np.abs(slices[0]))), 1e-3)
+        self.assertEqual(0.0, float(np.max(np.abs(fx.process(np.zeros(2400, np.float32))))))

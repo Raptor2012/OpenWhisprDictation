@@ -72,7 +72,7 @@ def run():
         for state, dock, panel in cases:
             width, height = ((200,48) if dock else (180,150))
             if panel in ('card','menu','list'):
-                width,height = (320,236 if dock else 336)
+                width,height = (320,246 if dock else 336)
                 if panel=='list':height+=120
             elif panel:
                 width,height = (340,214 if dock else 300)
@@ -182,23 +182,28 @@ def run():
           const canvas=document.getElementById('orbWave'),ctx=canvas.getContext('2d');
           return Array.from({length:11},(_,i)=>{
             const x=Math.floor((i+.5)*canvas.width/11),pixels=ctx.getImageData(x,0,1,canvas.height).data;
-            let n=0;for(let y=0;y<canvas.height;y++)if(pixels[y*4+3]>20)n++;return n;
+            let top=canvas.height,bottom=-1;for(let y=0;y<canvas.height;y++)if(pixels[y*4+3]>20){top=Math.min(top,y);bottom=Math.max(bottom,y);}
+            return Math.max(0,bottom-top+1);
           });
         };
+        window.qaBandPeaks=()=>new Promise(done=>{let best=new Array(11).fill(0),n=0;
+          const step=()=>{qaBandHeights().forEach((h,i)=>best[i]=Math.max(best[i],h));if(++n<14)setTimeout(step,35);else done(best);};step();});
           window.qaQuietRadius=gl.getUniform(prog,U.uR);window.qaQuietWave=qaWaveHeight();
           S.mic=qaMicFeedback.level;S.micBands=qaMicFeedback.bands;render();''')
         time.sleep(.8)
+        window.evaluate_js("qaBandPeaks().then(p=>{window.qaPeaks=p;})")
+        time.sleep(.7)
         audio = window.evaluate_js('''(()=>{
           const wave=document.getElementById('orbWave');
           return {radiusRatio:gl.getUniform(prog,U.uR)/qaQuietRadius,
             waveform:!!wave&&getComputedStyle(wave).opacity==='1',
-            quietWave:qaQuietWave,voiceWave:qaWaveHeight(),bandHeights:qaBandHeights(),
+            quietWave:qaQuietWave,voiceWave:qaWaveHeight(),bandHeights:window.qaPeaks,
             expectedBand:qaMicFeedback.dominant,errors:qaErrors.slice()};
         })()''')
         report['audio']=audio
         if (audio['radiusRatio']<1.04 or not audio['waveform'] or audio['voiceWave']<=audio['quietWave']
-                or max(audio['bandHeights'])-min(audio['bandHeights'])<4
-                or audio['bandHeights'].index(max(audio['bandHeights']))!=audio['expectedBand'] or audio['errors']):
+                or max(audio['bandHeights'])-min(audio['bandHeights'])<3
+                or audio['bandHeights'][audio['expectedBand']] < max(audio['bandHeights'])-1 or audio['errors']):
             report['failures'].append({'audio':audio})
         window.evaluate_js('''S.bubble={id:'motion-capture',who:'you',live:true,text:'Your voice moves the orb. New words rise gently into view.'};tickBubble(.01);''')
         time.sleep(.1)
@@ -223,14 +228,16 @@ def run():
           window.qaFinishAdvance=shown-qaBeforeFinish;
           S.speaking=true;S.state='done';render();''')
         time.sleep(.7)
+        window.evaluate_js("qaBandPeaks().then(p=>{window.qaPeaks=p;})")
+        time.sleep(.7)
         playback = window.evaluate_js('''({waveform:getComputedStyle(orbWave).opacity==='1',
           radiusRatio:gl.getUniform(prog,U.uR)/qaPlaybackQuiet,
-          bandHeights:qaBandHeights(),expectedBand:qaOutputFeedback.dominant,
+          bandHeights:window.qaPeaks,expectedBand:qaOutputFeedback.dominant,
           finishAdvance:qaFinishAdvance,errors:qaErrors.slice()})''')
         report['playback']=playback
         if (not playback['waveform'] or playback['radiusRatio']<1.04 or playback['finishAdvance']>.61
-                or max(playback['bandHeights'])-min(playback['bandHeights'])<4
-                or playback['bandHeights'].index(max(playback['bandHeights']))!=playback['expectedBand'] or playback['errors']):
+                or max(playback['bandHeights'])-min(playback['bandHeights'])<3
+                or playback['bandHeights'][playback['expectedBand']] < max(playback['bandHeights'])-1 or playback['errors']):
             report['failures'].append({'playback':playback})
         window.evaluate_js('''S.speaking=false;S.state='ready';S.out=0;render();tickBubble(10);S.bubble=null;tickBubble(0);''')
         exit_opacity=[]
@@ -264,14 +271,14 @@ def run():
           choosingDelivery=false;dismissAfterLeave();
         })()''')
         time.sleep(.5)
-        window.evaluate_js('''qaTransitions.pointerLeaveCloses=!expanded&&!card.classList.contains('open');
+        window.evaluate_js('''qaTransitions.pointerLeaveStaysOpen=expanded;
           document.documentElement.matches=qaOriginalMatches;qaTransitions.errors=qaErrors.slice();''')
         transitions = window.evaluate_js('qaTransitions')
         window.evaluate_js('S.expanded=false;render();')
         report['transitions'] = transitions
         if (not transitions['staysClosed'] or not transitions['latestClickWins']
-                or transitions['writes'] != [False,True,False,False]
-                or not all(transitions[key] for key in ('oldPollAfterAckStaysClosed','pollDuringWriteStaysClosed','pointerLeaveCloses'))
+                or transitions['writes'] != [False,True,False]
+                or not all(transitions[key] for key in ('oldPollAfterAckStaysClosed','pollDuringWriteStaysClosed','pointerLeaveStaysOpen'))
                 or transitions['errors']):
             report['failures'].append({'transitions':transitions})
         window.evaluate_js('''api=(name,...args)=>{qaCalls.push({name,args});

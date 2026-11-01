@@ -30,7 +30,7 @@ import webview
 from diagnostics import write_status
 from live_reader import ContinuousAudio
 from live_reader_core import Message
-from t3_voice_core import (DictationPreview, DictationWatch, OpenWhisprFeed, Routes, StreamingFeed, UtteranceGate, cleanup_text,
+from t3_voice_core import (DictationPreview, DictationWatch, VoiceFx, OpenWhisprFeed, Routes, StreamingFeed, UtteranceGate, cleanup_text,
                            audio_feedback, list_threads, parse_hotkey, parse_thread_url, read_env, send_message, transcribe)
 
 ROOT = Path(__file__).resolve().parent
@@ -38,7 +38,7 @@ DB = Path.home() / '.t3/userdata/statev2.sqlite'
 RATE = 16000
 FRAME = 320  # 20 ms at 16 kHz
 COMPACT, BUBBLE, CARD = (180, 150), (340, 300), (320, 336)
-BAR, BAR_BUBBLE, BAR_CARD = (200, 48), (340, 214), (320, 236)   # toolbar mode
+BAR, BAR_BUBBLE, BAR_CARD = (200, 48), (340, 214), (320, 246)   # toolbar mode
 OPENWHISPR_ENV = Path(os.environ.get('APPDATA', '')) / 'OpenWhisprDictation/.env'
 LINGER = 1.2        # seconds the orb stays after the last reason to show it
 FADE = 0.5          # seconds for the exit animation before the window is hidden
@@ -198,6 +198,11 @@ class Engine:
         self.mode = 'openwhispr'  # hold/release defines turns; never listen continuously
         self.prefs.set('mode', self.mode)
         self.cleanup = bool(self.prefs.get('cleanup', False))
+        self.voice_fx = bool(self.prefs.get('voiceFx', True))   # FRIDAY-style reverb and sheen
+        self.fx = VoiceFx()
+        self.expanded_at = 0.0
+        self.card_focused = False
+        self.outside_since = None
         self.window = None
         self.hwnd = None
         self.size = COMPACT
@@ -453,6 +458,7 @@ class Engine:
                 'dictActivation': self.dict_mode,
                 'followActive': self.follow_active,
                 'expanded': self.expanded,
+                'voiceFx': self.voice_fx,
                 'delivery': self.delivery,
                 'review': {key: self.review.get(key) for key in ('id', 'text', 'title', 'sending', 'error')} if self.review else None,
                 'bubble': self.dictation_bubble(now) or (self.bubble if show_bubble else None)}
@@ -528,6 +534,11 @@ class Engine:
             else:
                 winreg.SetValueEx(key, 'MaeveT3Voice', 0, winreg.REG_SZ, self.startup_command())
         self.startup_cached = None
+
+    def toggle_voice_fx(self):
+        with self.lock:
+            self.voice_fx = not self.voice_fx
+            self.prefs.set('voiceFx', self.voice_fx)
 
     # ----- toolbar and OpenWhispr pill -----
     def toggle_dock(self):
@@ -800,6 +811,9 @@ class Engine:
                 self.notice.put(('speaking', message))
                 start = time.perf_counter()
                 first = None
+                fx = self.fx if self.voice_fx else None
+                if fx is None:
+                    self.fx.reset()
                 with tts.stream(message.text, voice='Maeve') as stream:
                     for chunk in stream:
                         if cancel.is_set() or self.quit.is_set():
@@ -807,9 +821,24 @@ class Engine:
                         if first is None:
                             first = (time.perf_counter() - start) * 1000
                             self.notice.put(('first-audio', first))
-                        clipped = np.clip(chunk, -1, 1)
+                        clipped = np.clip(fx.process(chunk) if fx else chunk, -1, 1)
                         pcm = (clipped * 32767).astype('<i2').tobytes()
                         if not self.audio.put(pcm, epoch, cancel):
+                            break
+                if cancel.is_set() or self.quit.is_set():
+                    self.fx.reset()  # an interruption never leaves a reverb tail behind
+                elif fx is not None:
+                    # Release the reverb tail in 50 ms slices, only while the output is nearly empty and
+                    # nothing new is queued, so the next sentence never waits behind it.
+                    while self.jobs.empty() and fx.tail_live and not cancel.is_set():
+                        with self.audio.cv:
+                            while (self.audio.pending > 2400 and self.jobs.empty() and not cancel.is_set()
+                                   and epoch == self.audio.epoch):
+                                self.audio.cv.wait(.01)
+                        if not self.jobs.empty() or cancel.is_set():
+                            break
+                        tail = np.clip(fx.drain(0.05), -1, 1)
+                        if not self.audio.put((tail * 32767).astype('<i2').tobytes(), epoch, cancel):
                             break
                 self.audio.drain(epoch, cancel)
                 self.out_level = 0.0
@@ -888,6 +917,9 @@ class Engine:
                     self.dict_state = 'dictating'
                     self.dict_preview_text = ''
                     self.dict_preview_until = 0.0
+                    self.bubble = None          # older reply text never comes back over the new turn
+                    self.bubble_until = 0.0
+                    self.bubble_layout_until = 0.0
                     if not self.review:
                         self.dict_preview_session = self.dict_preview.start()
                     self.update_mic()
@@ -1109,8 +1141,25 @@ class Engine:
             return True
         return self.reply_bubble_visible(now)
 
+    def card_watch(self, now):
+        """Close the settings card when the user clicks another window, or leaves it for 2.5 s."""
+        if not (self.expanded and self.hwnd) or self.review or now - self.expanded_at < 0.8:
+            return
+        foreground = user32.GetForegroundWindow()
+        ours = foreground == self.hwnd or user32.GetAncestor(foreground, 3) == self.hwnd  # GA_ROOTOWNER
+        if ours:
+            self.card_focused = True
+        point, rect = wintypes.POINT(), wintypes.RECT()
+        user32.GetCursorPos(ctypes.byref(point))
+        user32.GetWindowRect(self.hwnd, ctypes.byref(rect))
+        inside = rect.left <= point.x < rect.right and rect.top <= point.y < rect.bottom
+        self.outside_since = None if inside else (self.outside_since or now)
+        if (self.card_focused and not ours and not inside) or (self.outside_since and now - self.outside_since > 2.5):
+            self.set_expanded(False)
+
     def desktop_tick(self):
         now = time.monotonic()
+        self.card_watch(now)
         if now >= self.t3_scan_at:
             if not (self.t3_hwnd and user32.IsWindow(self.t3_hwnd)):
                 self.t3_hwnd = find_t3_window()
@@ -1203,6 +1252,9 @@ class Engine:
         if self.hwnd is None or self.review or expanded == self.expanded:
             return
         self.expanded = expanded
+        self.expanded_at = time.monotonic()
+        self.card_focused = False
+        self.outside_since = None
         if not expanded:
             self.panel_extra = False
         self.show_until = time.monotonic() + LINGER
@@ -1239,6 +1291,9 @@ class Api:
     """Exposed to the page as pywebview.api."""
     def __init__(self, engine):
         self._engine = engine
+
+    def toggle_voice_fx(self):
+        self._engine.toggle_voice_fx()
 
     def poll(self):
         return self._engine.snapshot()

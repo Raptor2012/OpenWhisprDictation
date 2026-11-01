@@ -484,3 +484,34 @@ class PlaybackMeterTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class CardWatchTests(unittest.TestCase):
+    def watch(self, foreground, cursor_inside, focused=False, outside_for=0.0):
+        e = engine(expanded=True, hwnd=100, review=None, expanded_at=time.monotonic() - 2,
+                   card_focused=focused, outside_since=(time.monotonic() - outside_for) if outside_for else None)
+        e.set_expanded = Mock()
+
+        def cursor(point):
+            point._obj.x, point._obj.y = (5, 5) if cursor_inside else (500, 500)
+            return 1
+
+        def rect(hwnd, r):
+            r._obj.left, r._obj.top, r._obj.right, r._obj.bottom = 0, 0, 100, 100
+            return 1
+        with patch.object(t3_voice.user32, 'GetForegroundWindow', return_value=foreground), \
+                patch.object(t3_voice.user32, 'GetAncestor', return_value=foreground), \
+                patch.object(t3_voice.user32, 'GetCursorPos', side_effect=cursor), \
+                patch.object(t3_voice.user32, 'GetWindowRect', side_effect=rect):
+            e.card_watch(time.monotonic())
+        return e
+
+    def test_focus_blip_inside_the_card_keeps_it_open(self):
+        self.watch(foreground=999, cursor_inside=True, focused=True).set_expanded.assert_not_called()
+
+    def test_click_on_another_window_closes_it(self):
+        self.watch(foreground=999, cursor_inside=False, focused=True).set_expanded.assert_called_once_with(False)
+
+    def test_sustained_pointer_exit_closes_it(self):
+        self.watch(foreground=100, cursor_inside=False, outside_for=3.0).set_expanded.assert_called_once_with(False)
+        self.watch(foreground=100, cursor_inside=False, outside_for=1.0).set_expanded.assert_not_called()

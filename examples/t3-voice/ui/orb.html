@@ -12,7 +12,7 @@
   #cap { position:absolute; left:0; right:0; bottom:14px; text-align:center; font-size:11.5px; letter-spacing:.3px; color:var(--muted); overflow:hidden; text-overflow:ellipsis;
          text-shadow:0 1px 6px rgba(0,0,0,.65); opacity:0; transform:translateY(5px); transition:opacity .35s var(--soft), transform .5s var(--spring); pointer-events:none; white-space:nowrap; }
   #cap.show { opacity:1; transform:none; }
-  #orbWave { position:absolute; left:54px; bottom:8px; width:72px; height:14px; pointer-events:none;
+  #orbWave { position:absolute; left:42px; bottom:6px; width:96px; height:18px; pointer-events:none;
              opacity:0; transform:translateY(3px) scaleX(.85); transition:opacity .18s ease, transform .38s var(--soft); }
   body.audio-active #orbWave { opacity:1; transform:none; }
   body.audio-active #cap { opacity:0; }
@@ -120,7 +120,7 @@
   .foot span:hover { color:var(--fg); background:rgba(255,255,255,.06); }
   #menu { position:absolute; right:14px; bottom:40px; background:rgba(30,31,38,.97); border:1px solid var(--line); border-radius:12px; padding:6px; display:none; min-width:220px; box-shadow:0 10px 30px rgba(0,0,0,.5); }
   #menu.open { display:block; }
-  #menu div { padding:7px 10px; font-size:12px; border-radius:8px; cursor:pointer; }
+  #menu div { padding:5px 10px; font-size:12px; border-radius:8px; cursor:pointer; }
   #menu div:hover { background:rgba(255,255,255,.08); }
   #menu div.on::before { content:"✓ "; color:#8fb0ff; }
   #menu div:not(.on)::before { content:"\2003"; }
@@ -149,6 +149,7 @@
       <div id="mFollow">Follow active T3 thread</div>
       <div id="mCleanup">Clean up with OpenWhispr's model</div>
       <div id="mStartup">Start with Windows</div>
+      <div id="mFx">FRIDAY voice effect</div>
       <div id="mDock">Minimize to toolbar</div>
     </div>
   </div>
@@ -202,6 +203,9 @@ uniform float uArc;     // busy ring arc length
 uniform float uOff;     // 0..1 voice-off desaturation
 uniform vec3 uA, uB, uC; // palette: deep, mid, bright
 uniform float uAppear;  // 0..1 pop-in
+uniform vec4 uBands;    // smoothed voice energy: low, low-mid, high-mid, high
+uniform float uFlow;    // time that runs faster while someone speaks (never jumps)
+uniform float uParticles; // 0..1 particle presence
 
 vec3 hash3(vec3 p){ p = vec3(dot(p,vec3(127.1,311.7,74.7)), dot(p,vec3(269.5,183.3,246.1)), dot(p,vec3(113.5,271.9,124.6))); return -1.0 + 2.0*fract(sin(p)*43758.5453123); }
 float noise(vec3 p){ vec3 i = floor(p); vec3 f = fract(p); vec3 u = f*f*(3.0-2.0*f);
@@ -217,9 +221,37 @@ void main(){
   float t = uTime;
   float ang = atan(d.y, d.x);
   // fluid silhouette: low-frequency wobble that grows with level
-  float wob = 1.0 + (0.022 + 0.05*uLevel) * fbm(vec3(cos(ang)*1.2, sin(ang)*1.2, t*0.32));
+  float fl = uFlow;
+  // fluid silhouette: slow noise plus voice-driven lobes, each band at its own angular frequency
+  float lobes = uBands.x*0.075*sin(2.0*ang + fl*0.9)
+              + uBands.y*0.055*sin(3.0*ang - fl*1.3 + 1.7)
+              + uBands.z*0.038*sin(5.0*ang + fl*1.9 + 0.6)
+              + uBands.w*0.024*sin(8.0*ang - fl*2.6 + 2.2);
+  float wob = 1.0 + (0.022 + 0.05*uLevel) * fbm(vec3(cos(ang)*1.2, sin(ang)*1.2, fl*0.32)) + lobes;
   float r = length(d) / wob;
   vec4 col = vec4(0.0);
+
+  // particles: soft motes that orbit, drift outward and respawn; more and brighter with voice
+  if (uParticles > 0.01) {
+    for (int i = 0; i < 26; i++) {
+      float fi = float(i);
+      float h1 = fract(sin(fi*12.9898)*43758.5453);
+      float h2 = fract(sin(fi*78.233)*12345.678);
+      float h3 = fract(sin(fi*39.425)*24634.635);
+      float dir = h1 > 0.5 ? 1.0 : -1.0;
+      float life = fract(fl*0.07*(0.55 + h3) + h2);
+      float a = h1*6.2831853 + fl*dir*(0.22 + 0.4*h2) + life*dir*1.4;   // spiral as they drift out
+      float rad = 1.1 + life*(0.42 + 0.55*uLevel) + 0.04*sin(fl*1.7 + fi);
+      vec2 pp = vec2(cos(a), sin(a)) * rad;
+      pp += 0.05*vec2(sin(fl*1.3 + fi*2.1), cos(fl*1.1 + fi*1.7));
+      vec2 dv = d - pp;
+      float size = (0.022 + 0.022*h3) * (1.0 + 0.8*uLevel);
+      float glow = exp(-dot(dv, dv) / (size*size));
+      float pa = glow * sin(life*3.14159) * uParticles * (0.55 + 0.45*h2);
+      vec3 pc = mix(uB, uC, 0.35 + 0.65*h3);
+      col += vec4(pc * pa, pa * 0.6);
+    }
+  }
 
   // halo
   float halo = exp(-max(0.0, r - 1.0) * (4.6 - 0.8*uLevel)) * smoothstep(0.98, 1.04, r);
@@ -241,9 +273,9 @@ void main(){
     float z = sqrt(max(0.0, 1.0 - r*r));
     vec3 n = normalize(vec3(d.x/wob, d.y/wob, z));
     vec3 sp = vec3(n.xy*1.2, z*0.6);
-    vec3 warp = vec3(fbm(sp*0.9 + vec3(0.0, t*0.16, t*0.10)), fbm(sp*0.9 + vec3(5.2, -t*0.12, t*0.08)), 0.0);
-    float f1 = fbm(sp*1.3 + warp*1.6 + vec3(t*0.10, -t*0.07, t*0.12 + 0.15*uLevel));
-    float f2 = fbm(sp*2.0 - warp*1.2 + vec3(-t*0.16, t*0.09, 3.0));
+    vec3 warp = vec3(fbm(sp*0.9 + vec3(0.0, fl*0.16, fl*0.10)), fbm(sp*0.9 + vec3(5.2, -fl*0.12, fl*0.08)), 0.0);
+    float f1 = fbm(sp*1.3 + warp*1.6 + vec3(fl*0.10, -fl*0.07, fl*0.12 + 0.25*uLevel));
+    float f2 = fbm(sp*2.0 - warp*1.2 + vec3(-fl*0.16, fl*0.09, 3.0));
     float band = smoothstep(-0.35, 0.40, f1 + 0.30*f2);
     vec3 body = mix(uA, uB, band);
     body = mix(body, uC, smoothstep(0.20, 0.70, f2 + 0.35*uLevel) * 0.6);
@@ -319,15 +351,18 @@ gl.linkProgram(prog); gl.useProgram(prog);
 const buf = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, buf);
 gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, 1,1]), gl.STATIC_DRAW);
 const aLoc = gl.getAttribLocation(prog, 'a'); gl.enableVertexAttribArray(aLoc); gl.vertexAttribPointer(aLoc, 2, gl.FLOAT, false, 0, 0);
-const U = {}; for (const n of ['uRes','uCenter','uR','uTime','uLevel','uGlow','uBusy','uSpin','uArc','uOff','uA','uB','uC','uAppear']) U[n] = gl.getUniformLocation(prog, n);
+const U = {}; for (const n of ['uRes','uCenter','uR','uTime','uLevel','uGlow','uBusy','uSpin','uArc','uOff','uA','uB','uC','uAppear','uBands','uFlow','uParticles']) U[n] = gl.getUniformLocation(prog, n);
 gl.enable(gl.BLEND); gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
 
 let S = {state:'loading', text:'', mic:0, out:0, voiceOn:false, mode:'openwhispr', thread:'', threads:[], detail:'', cleanup:false, startup:false,
          visible:true, micMuted:false, maeveMuted:false, bubble:null};
 const sA = new Spring3(PAL.loading.a, 60, 12), sB = new Spring3(PAL.loading.b, 60, 12), sC = new Spring3(PAL.loading.c, 60, 12);
-const sLevel = new Spring(0, 170, 26);
-const sScale = new Spring(1, 90, 17);
+const sLevel = new Spring(0, 200, 26);
+const sScale = new Spring(1, 120, 19);
 let audioS = 0;   // level smoothed between 20 Hz status polls
+let flow = 0; const quad = [0,0,0,0]; const sPart = new Spring(0.15, 40, 12);
+function bandGroups(b){ if(!b) return [0,0,0,0]; const avg=(i,j)=>{let s=0;for(let k=i;k<j;k++)s+=Math.max(0,Math.min(1,b[k]||0));return s/(j-i);};
+  return [avg(0,3),avg(3,6),avg(6,9),avg(9,11)]; }
 const sAppear = new Spring(0, 190, 15);   // pop-in with a little overshoot
 const sGlow = new Spring(.25, 50, 10), sBusy = new Spring(0, 80, 12), sOff = new Spring(1, 40, 10);
 let spin = 0, lastT = performance.now(), lastState = '', expanded = false, hovering = false;
@@ -341,7 +376,7 @@ function frame(now){
   sA.t = p.a; sB.t = p.b; sC.t = p.c; sGlow.t = p.glow;
   const audio = (state==='hearing'||state==='dictating') ? audioResponse(S.mic) : playbackActive() ? audioResponse(S.out) :
                 state==='reading' ? 0.18 + 0.12*Math.sin(now/260) : 0;
-  audioS += (audio - audioS) * (1 - Math.exp(-dt * (audio > audioS ? 14 : 6)));
+  audioS += (audio - audioS) * (1 - Math.exp(-dt * (audio > audioS ? 20 : 6)));
   sLevel.t = audioS;
   sLevel.k = audioS > sLevel.x ? 170 : 70; sLevel.d = audioS > sLevel.x ? 26 : 17;
   sBusy.t = (state==='transcribing'||state==='sending'||state==='processing') ? 1 : 0;
@@ -349,7 +384,13 @@ function frame(now){
   sAppear.t = (S.visible || hovering || expanded || barMode) ? 1 : 0;
   if (state !== lastState) { sScale.v += (state==='hearing'||state==='speaking'||state==='dictating') ? 0.8 : state==='done' ? 1.3 : (state==='error'||state==='failed') ? -0.7 : 0.45; lastState = state; }
   const breathe = 1 + 0.018*Math.sin(now/1700) + 0.006*Math.sin(now/730);
-  sScale.t = breathe * (1 + 0.12*sLevel.x);
+  sScale.t = breathe * (1 + 0.2*sLevel.x);
+  const talking = ['hearing','dictating'].includes(state) || playbackActive();
+  const groups = talking ? bandGroups(['hearing','dictating'].includes(state) ? S.micBands : S.outBands) : [0,0,0,0];
+  for (let k = 0; k < 4; k++) { const g = Math.min(1, groups[k]*1.6); quad[k] += (g - quad[k]) * (1 - Math.exp(-dt * (g > quad[k] ? 9 : 3.5))); }
+  const busyNow = state==='transcribing'||state==='sending'||state==='processing';
+  flow += dt * (0.55 + 1.5*sLevel.x + (busyNow ? 0.35 : 0));
+  sPart.t = talking ? 0.55 + 0.45*Math.min(1, sLevel.x*1.5) : busyNow ? 0.4 : (S.visible ? 0.18 : 0);
   const lvl = sLevel.step(dt), scale = sScale.step(dt), glow = sGlow.step(dt), b = sBusy.step(dt), off = sOff.step(dt);
   const appear = sAppear.step(dt);
   const A = sA.step(dt), B = sB.step(dt), C = sC.step(dt);
@@ -362,6 +403,9 @@ function frame(now){
   gl.uniform1f(U.uAppear, Math.max(0, Math.min(1, appear)));
   gl.uniform1f(U.uTime, now/1000);
   gl.uniform1f(U.uLevel, Math.max(0, lvl));
+  gl.uniform4f(U.uBands, quad[0], quad[1], quad[2], quad[3]);
+  gl.uniform1f(U.uFlow, flow);
+  gl.uniform1f(U.uParticles, Math.max(0, sPart.step(dt)));
   gl.uniform1f(U.uGlow, glow); gl.uniform1f(U.uBusy, b); gl.uniform1f(U.uSpin, spin);
   gl.uniform1f(U.uArc, 1.4); gl.uniform1f(U.uOff, off);
   gl.uniform3fv(U.uA, A); gl.uniform3fv(U.uB, B); gl.uniform3fv(U.uC, C);
@@ -376,27 +420,39 @@ requestAnimationFrame(frame);
 const wave = document.getElementById('wave'), wctx = wave.getContext('2d');
 wave.width = 52*dpr; wave.height = 24*dpr;
 const orbWave = document.getElementById('orbWave'), octx = orbWave.getContext('2d');
-orbWave.width = 72*dpr; orbWave.height = 14*dpr;
-const BARS = 11, bars = Array.from({length:BARS}, ()=> new Spring(0, 140, 21)), bandS = new Array(BARS).fill(0);
-const ENV = Array.from({length:BARS}, (_, i)=> 0.5 + 0.5*Math.sin(Math.PI*(i+0.5)/BARS));   // taller centre, quiet edges
+orbWave.width = 96*dpr; orbWave.height = 18*dpr;
+const BARS = 11, bandS = new Array(BARS).fill(0), ampS = new Spring(0, 90, 15);
+const LAYERS = [{f:1.5, s:2.1, a:1.0, alpha:.9, w:1.25}, {f:2.2, s:-2.9, a:.62, alpha:.5, w:1.0}, {f:3.0, s:3.7, a:.38, alpha:.3, w:.85}];
+function bandAt(u){ const x = u*(BARS-1), i = Math.floor(x), f = x - i; return bandS[Math.min(i,BARS-1)]*(1-f) + bandS[Math.min(i+1,BARS-1)]*f; }
 function drawWave(dt, C){
   const state=visualState(),busy = state==='processing'||state==='transcribing'||state==='sending';
   const spectrum=['hearing','dictating'].includes(state)?S.micBands:playbackActive()?S.outBands:null;
   const canvas = barMode ? wave : orbWave, ctx = barMode ? wctx : octx;
-  ctx.clearRect(0, 0, canvas.width, canvas.height);
-  const col = `rgb(${C.map(v=>Math.round(Math.min(1,v)*255)).join(',')})`;
-  ctx.fillStyle = col;
-  const gap = canvas.width / BARS, bw = Math.max(1.5*dpr, gap*0.3), mid = canvas.height/2, t = performance.now()/1000;
+  let energy = 0;
   for (let i = 0; i < BARS; i++) {
     const raw = Math.max(0,Math.min(1,spectrum?.[i]||0));
-    bandS[i] += (raw - bandS[i]) * (1 - Math.exp(-dt * (raw > bandS[i] ? 12 : 5)));
-    let target = Math.pow(bandS[i], 0.85) * ENV[i];
-    if (busy) target = (0.10 + 0.07*Math.sin(t*3.2 - i*0.55)) * ENV[i];   // slow travelling shimmer while working
-    bars[i].t = target; const v = Math.max(0, bars[i].step(dt));
-    const h = Math.max(1.8*dpr, Math.min(canvas.height*0.86, (0.08 + v*0.8) * canvas.height));
-    const x = i*gap + (gap-bw)/2;
-    ctx.globalAlpha = 0.26 + 0.44*Math.min(1, v*2.2);
-    ctx.beginPath(); ctx.roundRect(x, mid - h/2, bw, h, bw/2); ctx.fill();
+    bandS[i] += (raw - bandS[i]) * (1 - Math.exp(-dt * (raw > bandS[i] ? 10 : 4)));
+    energy = Math.max(energy, bandS[i]);
+  }
+  ampS.t = busy ? 0.16 : Math.min(1, energy*1.2);
+  const amp = Math.max(0, ampS.step(dt));
+  const Wc = canvas.width, Hc = canvas.height, mid = Hc/2, t = performance.now()/1000;
+  ctx.clearRect(0, 0, Wc, Hc);
+  const rgb = C.map(v=>Math.round(Math.min(1,v)*255)).join(',');
+  const grad = ctx.createLinearGradient(0, 0, Wc, 0);
+  grad.addColorStop(0, `rgba(${rgb},0)`); grad.addColorStop(.5, `rgba(${rgb},1)`); grad.addColorStop(1, `rgba(${rgb},0)`);
+  ctx.strokeStyle = grad; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+  for (const L of LAYERS) {
+    ctx.beginPath();
+    for (let x = 0; x <= Wc; x += 1.5*dpr) {
+      const u = x / Wc, env = Math.pow(Math.sin(Math.PI*u), 1.2);
+      const local = busy ? 0.5 : 0.2 + 0.8*bandAt(u);
+      const y = mid + Math.sin(u*Math.PI*2*L.f + t*L.s) * (0.03 + amp*0.9*local) * env * L.a * Hc * 0.46;
+      x === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+    }
+    ctx.lineWidth = L.w * dpr;
+    ctx.globalAlpha = L.alpha * (0.3 + 0.7*Math.min(1, amp*3));
+    ctx.stroke();
   }
   ctx.globalAlpha = 1;
 }
@@ -532,6 +588,7 @@ function render(){
   document.getElementById('detail').title = S.detail || '';
   document.getElementById('mCleanup').classList.toggle('on', S.cleanup);
   document.getElementById('mStartup').classList.toggle('on', S.startup);
+  document.getElementById('mFx').classList.toggle('on', S.voiceFx !== false);
   const list = document.getElementById('list');
   const threadKeys = JSON.stringify(S.threads);
   if (list.dataset.n !== threadKeys) {
@@ -567,13 +624,21 @@ if (DEMO) {
 } else {
   window.addEventListener('pywebviewready', poll);
 }
-function applyExpanded(v){ expanded=v; card.classList.toggle('open', v); if(!v){document.getElementById('list').classList.remove('open'); document.getElementById('menu').classList.remove('open');} }
+let wantExpanded = false;   // the latest requested state; the card opens only after the window grows
+function applyExpanded(v){ expanded=v; wantExpanded=v; card.classList.toggle('open', v); if(!v){document.getElementById('list').classList.remove('open'); document.getElementById('menu').classList.remove('open');} }
 function setExpanded(v){
-  if (S.review || expanded===v) return;
+  if (S.review || wantExpanded===v) return;
+  wantExpanded = v;
   ++settingsGeneration; ++settingsPending;
-  S.expanded = v; applyExpanded(v);
-  // WebView bridge calls run on separate Python threads. Preserve click order.
-  settingsWrites = settingsWrites.then(()=>api('set_expanded', v)).catch(()=>{}).finally(()=>{--settingsPending;});
+  const generation = settingsGeneration;
+  S.expanded = v;
+  if (!v) applyExpanded(false);
+  // WebView bridge calls run on separate Python threads. Preserve click order. Open only after the
+  // window has grown, so the card never lays out over the orb in the small window first.
+  settingsWrites = settingsWrites.then(()=>api('set_expanded', v))
+    .then(()=> v ? new Promise(r=>setTimeout(r, 90)) : null)
+    .then(()=>{ if (v && wantExpanded && generation === settingsGeneration) applyExpanded(true); })
+    .catch(()=>{}).finally(()=>{--settingsPending;});
 }
 function panelExtra(){ api('set_panel_extra', document.getElementById('list').classList.contains('open')); }
 function setHover(v){ if (hovering===v) return; hovering = v; document.body.classList.toggle('hover', v); api('set_hover', v); render(); }
@@ -581,7 +646,9 @@ document.getElementById('orbwrap').addEventListener('mouseenter', ()=> setHover(
 let choosingDelivery=false;
 document.getElementById('delivery').addEventListener('pointerdown', ()=>{choosingDelivery=true;});
 document.getElementById('delivery').addEventListener('blur', ()=>{choosingDelivery=false;});
-function dismissAfterLeave(){ setHover(false); setTimeout(()=>{ if(!choosingDelivery && !document.documentElement.matches(':hover')) setExpanded(false); }, 400); }
+// The engine closes the card on a click elsewhere or a sustained pointer exit; focus changes
+// inside WebView2 fire spurious mouseleave events, so the page never closes it on its own here.
+function dismissAfterLeave(){ setHover(false); }
 document.body.addEventListener('mouseleave', dismissAfterLeave);
 let dragStart=null;
 cv.addEventListener('pointerdown',e=>{dragStart=[e.screenX,e.screenY];});
@@ -608,6 +675,7 @@ document.getElementById('fMore').onclick = (e)=>{ e.stopPropagation(); document.
 function closeMenu(){document.getElementById('menu').classList.remove('open');panelExtra();}
 document.getElementById('mCleanup').onclick = ()=> {closeMenu();api('toggle_cleanup');};
 document.getElementById('mStartup').onclick = ()=> {closeMenu();api('toggle_startup');};
+document.getElementById('mFx').onclick = ()=> {closeMenu();S.voiceFx = S.voiceFx === false;render();api('toggle_voice_fx');};
 document.getElementById('delivery').onchange = e=> { choosingDelivery=false; S.delivery=e.target.value; api('set_delivery', S.delivery); };
 reviewText.addEventListener('input', ()=>{ document.getElementById('reviewSend').disabled=!reviewText.value.trim() || !!S.review?.sending; });
 function sendReview(){ if (!S.review || !reviewText.value.trim() || document.getElementById('reviewSend').disabled) return; document.getElementById('reviewSend').disabled=true; api('confirm_review', S.review.id, reviewText.value); }

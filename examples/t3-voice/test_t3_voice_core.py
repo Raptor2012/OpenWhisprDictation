@@ -348,3 +348,59 @@ class AudioDeviceTests(unittest.TestCase):
         self.assertIsNone(resolve_audio_device('', self.devices, self.hostapis, 'input'))
         self.assertIsNone(resolve_audio_device('Unplugged headset', self.devices, self.hostapis, 'output'))
         self.assertIsNone(resolve_audio_device('Headphones (ULT WEAR)', self.devices, self.hostapis, 'input'))
+
+
+class AgentActivityTests(unittest.TestCase):
+    def setUp(self):
+        import sqlite3
+        self.tmp = tempfile.TemporaryDirectory(dir=Path(__file__).parent/'runtime')
+        self.addCleanup(self.tmp.cleanup)
+        self.path=Path(self.tmp.name)/'state.sqlite'
+        self.db=sqlite3.connect(self.path)
+        self.addCleanup(self.db.close)
+        self.db.executescript("""
+          CREATE TABLE orchestration_v2_projection_runs(run_id TEXT,thread_id TEXT,ordinal INTEGER,status TEXT);
+          CREATE TABLE orchestration_v2_projection_nodes(node_id TEXT,run_id TEXT,kind TEXT);
+          CREATE TABLE orchestration_v2_projection_runtime_requests(runtime_request_id TEXT,thread_id TEXT,node_id TEXT,kind TEXT,status TEXT,resolved_at TEXT,payload_json TEXT);
+          CREATE TABLE orchestration_v2_projection_messages(thread_id TEXT,run_id TEXT,role TEXT,streaming INTEGER);
+        """)
+        self.db.execute("INSERT INTO orchestration_v2_projection_runs VALUES('run','chosen',1,'running')")
+        self.db.commit()
+
+    def activity(self, thread='chosen'):
+        from t3_voice_core import read_agent_activity
+        return read_agent_activity(self.path,thread)
+
+    def request(self, node_kind='approval_request', status='pending', run='run'):
+        self.db.execute('INSERT INTO orchestration_v2_projection_nodes VALUES(?,?,?)',('node',run,node_kind))
+        self.db.execute('INSERT INTO orchestration_v2_projection_runtime_requests VALUES(?,?,?,?,?,?,?)',
+                        ('req','chosen','node','command',status,None,'{}'))
+        self.db.commit()
+
+    def test_approval_only_for_pending_request_in_current_run(self):
+        self.request()
+        self.assertTrue(self.activity()['approval'])
+        self.assertEqual('approval',self.activity()['activity'])
+        self.db.execute("UPDATE orchestration_v2_projection_runs SET status='completed'");self.db.commit()
+        self.assertFalse(self.activity()['approval'])
+        self.assertEqual('idle',self.activity()['activity'])
+
+    def test_stale_run_other_thread_and_resolved_requests_never_light_approval(self):
+        self.request(run='old')
+        self.assertFalse(self.activity()['approval'])
+        self.assertFalse(self.activity('other')['approval'])
+        self.db.execute("UPDATE orchestration_v2_projection_nodes SET run_id='run'")
+        self.db.execute("UPDATE orchestration_v2_projection_runtime_requests SET status='resolved'");self.db.commit()
+        self.assertFalse(self.activity()['approval'])
+
+    def test_questions_are_distinct_and_streaming_output_has_work_state(self):
+        self.assertEqual('thinking',self.activity()['activity'])
+        self.db.execute("INSERT INTO orchestration_v2_projection_messages VALUES('chosen','run','assistant',1)");self.db.commit()
+        self.assertTrue(self.activity()['producing'])
+        self.request(node_kind='user_input_request')
+        self.assertTrue(self.activity()['needsInput'])
+        self.assertFalse(self.activity()['approval'])
+
+    def test_missing_schema_is_neutral(self):
+        self.db.execute('DROP TABLE orchestration_v2_projection_runs');self.db.commit()
+        self.assertEqual('unknown',self.activity()['activity'])

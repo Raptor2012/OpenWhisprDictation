@@ -16,7 +16,7 @@ from live_reader_core import Message
 
 def engine(**fields):
     e = t3_voice.Engine.__new__(t3_voice.Engine)
-    defaults = dict(choosing_delivery=False, mic_device="", speaker_device="", asr_pending=0, panel_extra=False, review=None, delivery='immediate', follow_active=False, active_thread=None, dock=False, dict_state='', expanded=False, hovered=False, pin_until=0.0, pending=None, state='ready', confirmed=False,
+    defaults = dict(settled_feed_run='',synthesis_done_run='',agent={},visual_events={'sent':0,'interrupt':0},high_contrast=False,reduced_motion=False,choosing_delivery=False, mic_device="", speaker_device="", asr_pending=0, panel_extra=False, review=None, delivery='immediate', follow_active=False, active_thread=None, dock=False, dict_state='', expanded=False, hovered=False, pin_until=0.0, pending=None, state='ready', confirmed=False,
                     sent_at=0.0, error_at=0.0, t3_min=False, bubble=None, bubble_until=0.0, bubble_seq=0,
                     bubble_run=None, silent=deque(), meta={}, dict_preview_text='', dict_preview_until=0,
                     dict_preview_session=0, dict_preview=None, dictating=False, mic_level=0, current=None,
@@ -579,3 +579,92 @@ class NativeDropdownTests(unittest.TestCase):
         foreground.assert_not_called()
         e.set_expanded.assert_not_called()
         self.assertIsNone(e.outside_since)
+
+
+class ReplyProgressTests(unittest.TestCase):
+    def audio(self):
+        with patch('live_reader.sd.RawOutputStream'):
+            return t3_voice.ContinuousAudio()
+
+    def play(self,audio,samples):
+        audio.callback(bytearray(samples*2),samples,None,SimpleNamespace(output_underflow=False))
+
+    def test_reply_progress_excludes_cues_and_stays_indeterminate_until_final(self):
+        audio=self.audio();cancel=threading.Event()
+        self.assertTrue(hasattr(audio,'begin_reply'),'reply tracking is missing')
+        audio.put(bytes(20),audio.epoch,cancel)
+        audio.begin_reply('run')
+        audio.put(bytes(200),audio.epoch,cancel,reply_run='run')
+        self.play(audio,60)
+        self.assertEqual(50,audio.playback_progress()['played'])
+        self.assertIsNone(audio.playback_progress()['fraction'])
+        audio.finish_reply('run')
+        self.assertEqual(.5,audio.playback_progress()['fraction'])
+        self.play(audio,100)
+        self.assertEqual(1,audio.playback_progress()['fraction'])
+        self.assertFalse(audio.playback_progress()['active'])
+
+    def test_sentence_continuity_and_interruption_clear_reply_progress(self):
+        audio=self.audio();cancel=threading.Event()
+        self.assertTrue(hasattr(audio,'begin_reply'),'reply tracking is missing')
+        for i in range(2):
+            audio.begin_reply('run');audio.put(bytes(100),audio.epoch,cancel,reply_run='run');self.play(audio,50)
+        audio.finish_reply('run')
+        self.assertEqual(100,audio.playback_progress()['total'])
+        audio.reset()
+        self.assertEqual('',audio.playback_progress()['run'])
+        self.assertFalse(audio.playback_progress()['active'])
+
+
+class VisualEngineTests(unittest.TestCase):
+    def test_playback_becomes_determinate_after_final_synthesis_before_drain(self):
+        with patch('live_reader.sd.RawOutputStream'):
+            audio=t3_voice.ContinuousAudio()
+        audio.begin_reply('run');audio.put(bytes(200),audio.epoch,threading.Event(),reply_run='run')
+        e=engine(audio=audio,jobs=queue.Queue(),agent={'activity':'thinking','run':'run'},synthesis_done_run='run',settled_feed_run='run')
+        self.assertTrue(hasattr(e,'finalize_playback'),'final synthesis integration missing')
+        e.finalize_playback();self.assertIsNone(audio.playback_progress()['fraction'])
+        e.agent['activity']='idle';e.synthesis_done_run=''
+        e.finalize_playback();self.assertIsNone(audio.playback_progress()['fraction'])
+        e.synthesis_done_run='run';e.finalize_playback()
+        self.assertEqual(0,audio.playback_progress()['fraction'])
+        self.assertTrue(audio.playback_progress()['active'])
+
+    def test_appearance_preferences_round_trip_through_normal_api(self):
+        import tempfile
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parent/'runtime') as folder:
+            path=Path(folder)/'prefs.json'
+            e=engine(lock=threading.RLock(),prefs=t3_voice.Prefs(path))
+            e.set_appearance(True,True)
+            reopened=t3_voice.Prefs(path)
+            self.assertTrue(reopened.get('highContrast'))
+            self.assertTrue(reopened.get('reducedMotion'))
+
+    def test_only_an_active_reply_triggers_interruption_event(self):
+        for current,expected in ((None,0),(Message('m','r','Words'),1)):
+            e=engine(current=current,audio=None,feed=None,generation=0,cancel=threading.Event(),jobs=queue.Queue())
+            e.stop()
+            self.assertEqual(expected,e.visual_events['interrupt'])
+
+    def test_actual_agent_waits_remain_visible(self):
+        for activity in ('approval','input','thinking'):
+            self.assertTrue(engine(agent={'activity':activity}).wants_visible(time.monotonic()))
+
+
+class PlaybackFinalizationEdgeTests(unittest.TestCase):
+    def make(self, run):
+        with patch('live_reader.sd.RawOutputStream'):
+            audio=t3_voice.ContinuousAudio()
+        audio.begin_reply(run);audio.put(bytes(200),audio.epoch,threading.Event(),reply_run=run)
+        return engine(audio=audio,jobs=queue.Queue(),synthesis_done_run=run,current=Message('m',run,'Text'),
+                      agent={'activity':'idle','run':'run'},settled_feed_run='')
+
+    def test_final_metadata_waits_for_a_completed_feed_poll(self):
+        e=self.make('run');e.finalize_playback()
+        self.assertIsNone(e.audio.playback_progress()['fraction'])
+        e.settled_feed_run='run';e.finalize_playback()
+        self.assertEqual(0,e.audio.playback_progress()['fraction'])
+
+    def test_voice_test_finishes_without_a_database_run(self):
+        e=self.make('voice-test-123');e.finalize_playback()
+        self.assertEqual(0,e.audio.playback_progress()['fraction'])

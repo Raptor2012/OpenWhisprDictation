@@ -381,6 +381,41 @@ class StreamingFeed(MessageFeed):
         return result
 
 
+def read_agent_activity(path, thread):
+    """Read only bounded v2 status metadata; never infer an approval from message prose."""
+    import sqlite3
+    result = {'run': '', 'activity': 'unknown', 'approval': False, 'needsInput': False, 'producing': False}
+    if not thread:
+        return result
+    try:
+        with closing(sqlite3.connect(Path(path).resolve().as_uri() + '?mode=ro', uri=True, timeout=.05)) as db:
+            db.execute('PRAGMA query_only=ON')
+            # Also bound work on an older database without the expected indexes.
+            db.set_progress_handler(lambda: 1, 100000)
+            row = db.execute('SELECT run_id,status FROM orchestration_v2_projection_runs '
+                             'WHERE thread_id=? ORDER BY ordinal DESC LIMIT 1', (thread,)).fetchone()
+            result['activity'] = 'idle'
+            if not row:
+                return result
+            run, status = row
+            result['run'] = run
+            if status not in ('running', 'queued', 'starting', 'waiting'):
+                return result
+            requests = db.execute('SELECT n.kind FROM orchestration_v2_projection_runtime_requests r '
+                                  'JOIN orchestration_v2_projection_nodes n ON n.node_id=r.node_id '
+                                  'WHERE r.thread_id=? AND n.run_id=? AND r.resolved_at IS NULL '
+                                  "AND r.status IN ('pending','open','awaiting_response') LIMIT 32", (thread,run)).fetchall()
+            result['approval'] = any(kind == 'approval_request' for kind, in requests)
+            result['needsInput'] = any(kind == 'user_input_request' for kind, in requests)
+            result['producing'] = bool(db.execute('SELECT 1 FROM orchestration_v2_projection_messages '
+                                                  "WHERE thread_id=? AND run_id=? AND role='assistant' AND streaming=1 LIMIT 1",
+                                                  (thread,run)).fetchone())
+            result['activity'] = 'approval' if result['approval'] else 'input' if result['needsInput'] else 'thinking'
+            return result
+    except (sqlite3.Error, OSError, ValueError):
+        return {'run': '', 'activity': 'unknown', 'approval': False, 'needsInput': False, 'producing': False}
+
+
 class UtteranceGate:
     """20-ms frames: interrupt on sustained speech; finish after a silence gap."""
     def __init__(self, start_frames=2, silence_frames=60, max_frames=1500, confirm_frames=7):

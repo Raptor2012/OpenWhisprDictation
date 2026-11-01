@@ -30,7 +30,7 @@ import webview
 from diagnostics import write_status
 from live_reader import ContinuousAudio
 from live_reader_core import Message
-from t3_voice_core import (DictationPreview, DictationWatch, VoiceFx, audio_device_choices, resolve_audio_device, OpenWhisprFeed, Routes, StreamingFeed, UtteranceGate, cleanup_text,
+from t3_voice_core import (DictationPreview, DictationWatch, VoiceFx, read_agent_activity, audio_device_choices, resolve_audio_device, OpenWhisprFeed, Routes, StreamingFeed, UtteranceGate, cleanup_text,
                            audio_feedback, list_threads, parse_hotkey, parse_thread_url, read_env, send_message, transcribe)
 
 ROOT = Path(__file__).resolve().parent
@@ -198,6 +198,13 @@ class Engine:
         self.mode = 'openwhispr'  # hold/release defines turns; never listen continuously
         self.prefs.set('mode', self.mode)
         self.cleanup = bool(self.prefs.get('cleanup', False))
+        self.high_contrast = bool(self.prefs.get('highContrast', False))
+        self.reduced_motion = bool(self.prefs.get('reducedMotion', False))
+        self.agent = {}
+        self.agent_poll_at = 0.0
+        self.visual_events = {'sent': 0, 'interrupt': 0}
+        self.synthesis_done_run = ''
+        self.settled_feed_run = ''
         self.voice_fx = bool(self.prefs.get('voiceFx', True))   # Techno audio effect: interface EQ, sheen and plate reverb
         self.fx = VoiceFx()
         self.mic_device = self.prefs.get('micDevice', '')          # '' = system default
@@ -449,7 +456,10 @@ class Engine:
         state, text = self.state, self.text
         if self.dict_state:
             state, text = self.dict_state, (self.dict_error if self.dict_state == 'failed' else '')
-        return {'state': state, 'text': text, 'mic': self.mic_level, 'out': self.audio.level if self.audio else 0.0,
+        return {'agent': self.agent, 'visualEvents': dict(self.visual_events),
+                'highContrast': self.high_contrast, 'reducedMotion': self.reduced_motion,
+                'playback': self.audio.playback_progress() if self.audio else None,
+                'state': state, 'text': text, 'mic': self.mic_level, 'out': self.audio.level if self.audio else 0.0,
                 'micBands': self.mic_bands, 'outBands': self.audio.spectrum if self.audio else [0.0]*11,
                 'speaking': self.current is not None and not self.maeve_muted,
                 'voiceOn': self.voice_on(), 'mode': self.mode, 'thread': self.thread or '', 'threadTitle': title,
@@ -480,6 +490,8 @@ class Engine:
                 self.prefs.set('followActive', False)
             self.stop()
             self.thread = thread
+            self.agent = {}
+            self.agent_poll_at = 0.0
             self.routes.select(thread)
             if automatic and had_thread:
                 self.routes.enable(enabled)
@@ -580,6 +592,13 @@ class Engine:
             old.close()
             self.prefs.set('speakerDevice', self.speaker_device)
             self.cue([523, 659], 60)               # a short chime on the new speaker
+
+    def set_appearance(self, high_contrast, reduced_motion):
+        with self.lock:
+            self.high_contrast = bool(high_contrast)
+            self.reduced_motion = bool(reduced_motion)
+            self.prefs.set('highContrast', self.high_contrast)
+            self.prefs.set('reducedMotion', self.reduced_motion)
 
     def toggle_voice_fx(self):
         with self.lock:
@@ -805,6 +824,9 @@ class Engine:
             self._stop_locked()
 
     def _stop_locked(self):
+        self.synthesis_done_run = ''
+        if self.current is not None:
+            self.visual_events['interrupt'] += 1
         self.generation += 1
         self.cancel.set()
         if self.feed:
@@ -853,6 +875,8 @@ class Engine:
                 with self.audio.cv:
                     if (self.feed and message.run in self.feed.suppressed) or generation != self.generation:
                         continue
+                    self.synthesis_done_run = ''
+                    self.audio.begin_reply(message.run)
                     self.current = message
                     self.cancel = threading.Event()
                     cancel = self.cancel
@@ -872,7 +896,7 @@ class Engine:
                             self.notice.put(('first-audio', first))
                         clipped = np.clip(fx.process(chunk) if fx else chunk, -1, 1)
                         pcm = (clipped * 32767).astype('<i2').tobytes()
-                        if not self.audio.put(pcm, epoch, cancel):
+                        if not self.audio.put(pcm, epoch, cancel, reply_run=message.run):
                             break
                 if cancel.is_set() or self.quit.is_set():
                     self.fx.reset()  # an interruption never leaves a reverb tail behind
@@ -887,14 +911,29 @@ class Engine:
                         if not self.jobs.empty() or cancel.is_set():
                             break
                         tail = np.clip(fx.drain(0.05), -1, 1)
-                        if not self.audio.put((tail * 32767).astype('<i2').tobytes(), epoch, cancel):
+                        if not self.audio.put((tail * 32767).astype('<i2').tobytes(), epoch, cancel, reply_run=message.run):
                             break
+                if not cancel.is_set():
+                    self.synthesis_done_run = message.run
+                    self.finalize_playback()
                 self.audio.drain(epoch, cancel)
                 self.out_level = 0.0
                 self.current = None
                 self.notice.put(('done', not cancel.is_set()))
         except Exception as exc:
             self.notice.put(('error', type(exc).__name__ + ': ' + str(exc)))
+
+    def finalize_playback(self):
+        # The total becomes known after the run has settled AND the last PCM has been generated.
+        if not self.audio or not self.synthesis_done_run or not self.jobs.empty():
+            return
+        run = self.synthesis_done_run
+        known_final = (run.startswith('voice-test-') or
+                       (self.agent.get('activity') == 'idle' and self.agent.get('run') == run
+                        and self.settled_feed_run == run))
+        abandoned = self.current is None and self.agent.get('run') != run
+        if known_final or abandoned:
+            self.audio.finish_reply(run)
 
     # ----- loop -----
     def loop(self):
@@ -1022,6 +1061,7 @@ class Engine:
                     self.finish_review()
                     words, asr_ms, total_ms = value
                     self.meta['utterancesSent'] += 1
+                    self.visual_events['sent'] += 1
                     self.meta.update(lastAsrMs=asr_ms, lastSendMs=total_ms)
                     self.set_state('waiting')
                     self.confirmed = False
@@ -1060,15 +1100,23 @@ class Engine:
             pass
         self.dictation_tick()
         self.flush_pending(time.monotonic())
+        now = time.monotonic()
+        if now >= self.agent_poll_at:
+            self.agent = read_agent_activity(DB, self.thread)
+            self.agent_poll_at = now + .35
         try:
             if self.ready and self.feed and self.voice_on():
-                for message in self.feed.poll():
+                messages = self.feed.poll()
+                self.settled_feed_run = ''
+                for message in messages:
                     self.last_run = message.run
                     if self.maeve_muted:
                         if self.t3_min:
                             self.silent.append(message)
                         continue
                     self.jobs.put_nowait((message, self.generation))
+                if self.agent.get('activity') == 'idle':
+                    self.settled_feed_run = self.agent.get('run', '')
                 if self.mode == 'openwhispr' and self.openwhispr.available():
                     self.forward_openwhispr()
         except queue.Full:
@@ -1076,6 +1124,7 @@ class Engine:
             self.set_state('error', 'Speech queue filled')
         except Exception as exc:
             self.meta['connectionError'] = type(exc).__name__
+        self.finalize_playback()
         self.meta['updatedAt'] = time.time()
         self.meta['mode'] = self.mode
         self.meta['inputMonitorActive'] = self.mic_stream is not None
@@ -1180,6 +1229,8 @@ class Engine:
         return CARD if self.expanded else BUBBLE if bubble else COMPACT
 
     def wants_visible(self, now):
+        if self.agent.get('activity') in ('approval', 'input', 'thinking'):
+            return True
         if self.review or self.dock or self.dict_state or self.expanded or self.hovered or now < self.pin_until or self.pending or self.dictation_bubble(now):
             return True
         state = self.state
@@ -1352,6 +1403,9 @@ class Api:
 
     def toggle_voice_fx(self):
         self._engine.toggle_voice_fx()
+
+    def set_appearance(self, high_contrast, reduced_motion):
+        self._engine.set_appearance(high_contrast, reduced_motion)
 
     def audio_devices(self):
         return self._engine.audio_devices()

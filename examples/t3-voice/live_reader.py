@@ -32,6 +32,9 @@ class ContinuousAudio:
         self.chunks = deque()
         self.pending = 0
         self.epoch = 0
+        self.reply_run = ""
+        self.reply_total = self.reply_played = 0
+        self.reply_final = False
         self.played_samples = 0
         self.callbacks = 0
         self.output_underflows = 0
@@ -50,15 +53,17 @@ class ContinuousAudio:
             if status.output_underflow:
                 self.output_underflows += 1
             while self.chunks and pos < len(target):
-                chunk = self.chunks[0]
+                chunk, reply_run = self.chunks[0]
                 take = min(len(chunk), len(target) - pos)
                 target[pos:pos + take] = chunk[:take]
                 pos += take
                 self.pending -= take
+                if reply_run and reply_run == self.reply_run:
+                    self.reply_played += take // 2
                 if take == len(chunk):
                     self.chunks.popleft()
                 else:
-                    self.chunks[0] = chunk[take:]
+                    self.chunks[0] = (chunk[take:], reply_run)
             self.played_samples += pos // 2
             level,bands = audio_feedback(target,24000) if pos else (0.0,[0.0]*11)
             self.level = max(level, self.level * .86)
@@ -68,6 +73,9 @@ class ContinuousAudio:
     def reset(self):
         with self.cv:
             self.epoch += 1
+            self.reply_run = ""
+            self.reply_total = self.reply_played = 0
+            self.reply_final = False
             self.chunks.clear()
             self.pending = 0
             self.level = 0.0
@@ -75,14 +83,35 @@ class ContinuousAudio:
             self.cv.notify_all()
             return self.epoch
 
-    def put(self, pcm, epoch, cancel):
+    def begin_reply(self, run):
+        with self.cv:
+            if self.reply_run != run:
+                self.reply_run = run
+                self.reply_total = self.reply_played = 0
+            self.reply_final = False
+
+    def finish_reply(self, run):
+        with self.cv:
+            if self.reply_run == run:
+                self.reply_final = True
+
+    def playback_progress(self):
+        with self.cv:
+            total, played = self.reply_total, min(self.reply_total, self.reply_played)
+            return {'run': self.reply_run, 'total': total, 'played': played,
+                    'fraction': played / total if total and self.reply_final else None,
+                    'active': bool(self.reply_run and total and (not self.reply_final or played < total))}
+
+    def put(self, pcm, epoch, cancel, reply_run=None):
         pcm = memoryview(pcm)
         with self.cv:
             while self.pending > 48000 and epoch == self.epoch and not cancel.is_set():
                 self.cv.wait(.03)
             if epoch != self.epoch or cancel.is_set():
                 return False
-            self.chunks.append(pcm)
+            self.chunks.append((pcm, reply_run))
+            if reply_run and reply_run == self.reply_run:
+                self.reply_total += len(pcm) // 2
             self.pending += len(pcm)
             return True
 

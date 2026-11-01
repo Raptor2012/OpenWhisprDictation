@@ -167,7 +167,7 @@ def run():
           return {shortMask,mask:getComputedStyle(btext).maskImage,webkitMask:getComputedStyle(btext).webkitMaskImage};
         })()''')
         report['textMask']=mask
-        if mask['shortMask']!='none' or mask['mask']!='none' or mask['webkitMask']!='none':report['failures'].append({'textMask':mask})
+        if mask['shortMask']!='none' or mask['mask']=='none' or mask['webkitMask']=='none':report['failures'].append({'textMask':mask})
         words = window.evaluate_js('''(()=>{
           S.bubble={id:'animated-words',who:'you',live:true,text:'Please inspect this'};tickBubble(.1);
           const first=btext.querySelector('.word');
@@ -341,6 +341,131 @@ def run():
                 or actions['edited']!='Edited preview' or not actions['disabled'] or actions['missingRoles']
                 or actions['legacyPillToggle'] or actions['legacyHandsfreeControl'] or actions['errors']):
             report['failures'].append({'actions':actions})
+        # An old poll must not undo a just-clicked appearance preference.
+        appearanceRace=window.evaluate_js("""(()=>{
+          const savedApi=api;api=()=>new Promise(()=>{});
+          document.getElementById('contrastSel').checked=true;
+          document.getElementById('motionSel').checked=true;
+          const oldAppearanceGeneration=typeof appearanceGeneration==='number'?appearanceGeneration:0;
+          saveAppearance();
+          const before={...S};
+          acceptSnapshot({...S,highContrast:false,reducedMotion:false},settingsGeneration,false,oldAppearanceGeneration);
+          const preserved=S.highContrast&&S.reducedMotion;
+          // End the synthetic pending write without any external preference mutation.
+          api=savedApi;appearanceWrites=Promise.resolve();
+          if(typeof appearancePending==='number')appearancePending=0;
+          S=before;S.highContrast=false;S.reducedMotion=false;render();
+          return {preserved};
+        })()""")
+        report['appearanceRace']=appearanceRace
+        if not appearanceRace['preserved']:report['failures'].append({'appearanceRace':appearanceRace})
+        resize(340,300)
+        window.evaluate_js("S.review=null;S.expanded=false;S.dock=false;S.speaking=false;S.state='ready';S.bubble=null;S.agent={activity:'thinking',producing:false};render();")
+        time.sleep(.7)
+        features = window.evaluate_js("""(()=>{
+          if(typeof effectState!=='function'||typeof threadAccent!=='function')return {missing:'visual effects',ok:false};
+          const thinking=visualState()==='thinking'&&effectState(1000).thinking;
+          S.speaking=true;
+          const playbackOverlap=['processing','transcribing','sending'].every(state=>{S.state=state;return visualState()==='speaking';});
+          S.speaking=false;S.state='ready';
+          S.agent={activity:'approval',approval:true};render();
+          const approval=visualState()==='approval'&&cap.textContent.toLowerCase().includes('approval');
+          S.agent={activity:'input',needsInput:true};render();
+          const question=visualState()==='input';
+          const accentStable=JSON.stringify(threadAccent('thread-a'))===JSON.stringify(threadAccent('thread-a'));
+          const accentDistinct=JSON.stringify(threadAccent('thread-a'))!==JSON.stringify(threadAccent('thread-b'));
+          S.visualEvents={sent:1,interrupt:0};effectState(1000);S.visualEvents.sent=2;
+          const ripple=effectState(1100).ripple>0;effectState(1200);
+          const noRetrigger=effectState(2500).ripple===0;
+          S.visualEvents.interrupt=1;const contraction=effectState(2600).contraction>0;
+          S.reducedMotion=true;S.highContrast=true;render();
+          const calm=effectState(3000);
+          const motionStops=calm.time===0&&calm.ripple===0&&calm.contraction===0&&calm.trail===0;
+          const contrast=document.body.classList.contains('high-contrast')&&getComputedStyle(document.body).getPropertyValue('--muted').trim()==='#e0e6ef';
+          const reduced=document.body.classList.contains('reduced-motion');
+          S.bubble={id:'calm-words',who:'you',live:true,text:'Words stay readable'};tickBubble(.1);
+          const calmWords=getComputedStyle(btext.querySelector('.word')).animationName==='none';
+          S.reducedMotion=false;S.highContrast=false;S.agent={activity:'idle'};render();
+          return {thinking,playbackOverlap,approval,question,accentStable,accentDistinct,ripple,noRetrigger,contraction,motionStops,contrast,reduced,calmWords,errors:qaErrors.slice()};
+        })()""")
+        report['visualFeatures']=features
+        if not all(v for k,v in features.items() if k!='errors') or features.get('errors'):
+            report['failures'].append({'visualFeatures':features})
+        window.evaluate_js("S.state='ready';S.speaking=false;S.agent={activity:'thinking',producing:true};S.bubble=null;S.visible=true;hovering=false;document.body.classList.remove('hover');render();")
+        time.sleep(.6)
+        capture('orb-thinking-trail')
+        shader = window.evaluate_js("({thinking:gl.getUniform(prog,U.uThinking),trail:gl.getUniform(prog,U.uBusy),linked:gl.getProgramParameter(prog,gl.LINK_STATUS),error:gl.getError()})")
+        window.evaluate_js("S.agent={activity:'approval',approval:true};render();")
+        time.sleep(.5)
+        capture('orb-approval-glow')
+        shader['approval'] = window.evaluate_js('gl.getUniform(prog,U.uApproval)>0')
+        window.evaluate_js("S.reducedMotion=true;S.highContrast=true;render();")
+        time.sleep(.5)
+        capture('orb-high-contrast-calm')
+        calm = window.evaluate_js("""(()=>{
+          const rgba=pctx.getImageData(0,0,parts.width,parts.height).data;
+          return {time:gl.getUniform(prog,U.uTime),flow:gl.getUniform(prog,U.uFlow),trail:gl.getUniform(prog,U.uBusy),
+            particlesClear:!rgba.some((v,i)=>i%4===3&&v>0),radius:gl.getUniform(prog,U.uR)};
+        })()""")
+        time.sleep(.4)
+        calm['stableRadius'] = window.evaluate_js('gl.getUniform(prog,U.uR)')==calm['radius']
+        report['shaderVisuals']={'shader':shader,'calm':calm}
+        if (shader['thinking']!=1 or shader['trail']<.9 or not shader['linked'] or not shader['approval'] or shader['error']
+                or any(calm[k]!=0 for k in ('time','flow','trail')) or not calm['particlesClear'] or not calm['stableRadius']):
+            report['failures'].append({'shaderVisuals':report['shaderVisuals']})
+        resize(340,214)
+        window.evaluate_js("S.reducedMotion=false;S.highContrast=false;S.agent={activity:'idle'};S.dock=true;S.speaking=true;S.out=qaOutputFeedback.level;S.outBands=qaOutputFeedback.bands;S.playback={active:true,fraction:.45};render();")
+        time.sleep(.5)
+        capture('bar-gradient-playback')
+        progress = window.evaluate_js("({value:document.getElementById('playbackTrack').getAttribute('aria-valuenow'),active:document.getElementById('playbackTrack').classList.contains('active')})")
+        window.evaluate_js("S.playback.fraction=null;render();")
+        progress['indeterminate'] = window.evaluate_js("document.getElementById('playbackTrack').classList.contains('indeterminate')&&!document.getElementById('playbackTrack').hasAttribute('aria-valuenow')")
+        report['playbackProgress']=progress
+        if progress['value']!='45' or not progress['active'] or not progress['indeterminate']:
+            report['failures'].append({'playbackProgress':progress})
+        resize(340,300)
+        window.evaluate_js("S.dock=false;S.speaking=false;S.state='ready';S.playback=null;S.agent={activity:'idle'};S.bubble={id:'scroll-reading',who:'you',live:true,text:'Read this long message at your own pace. '.repeat(70)};render();tickBubble(.1);btext.scrollTop=0;")
+        time.sleep(.3)
+        window.evaluate_js("S.bubble.text+=' A new final sentence.';tickBubble(.1);")
+        scrolling=window.evaluate_js("({atTop:btext.scrollTop===0,firstLineReadable:getComputedStyle(btext).maskImage==='none',capped:bubbleText.clientHeight===113})")
+        window.evaluate_js('btext.scrollTop=btext.scrollHeight;')
+        time.sleep(.3)
+        scrolling['fadeAfterScroll']=window.evaluate_js("getComputedStyle(btext).maskImage!=='none'")
+        window.evaluate_js('S.bubble.live=false;tickBubble(.1);')
+        scrolling['settles']=window.evaluate_js("bubbleEl.classList.contains('settled')")
+        capture('orb-final-text-scroll')
+        report['bubbleScrolling']=scrolling
+        if not all(scrolling.values()):report['failures'].append({'bubbleScrolling':scrolling})
+        # Appearance overlay fits the same native cards as the audio device overlay.
+        for dock in (False,True):
+            resize(320,270 if dock else 360)
+            window.evaluate_js("S.dock=%s;S.bubble=null;S.expanded=true;render();if(typeof openAppearance==='function')openAppearance();" % json.dumps(dock))
+            time.sleep(.5)
+            appearance = window.evaluate_js("""(()=>{
+              const panel=document.getElementById('appearance');if(!panel)return {missing:true};
+              const bad=[];for(const el of [panel,...panel.querySelectorAll('button,input,label')]){
+                const r=el.getBoundingClientRect();if(!r.width||!r.height||r.top<0||r.bottom>innerHeight||r.left<0||r.right>innerWidth)bad.push(el.id||el.tagName);}
+              return {bad,open:panel.classList.contains('open'),named:[...panel.querySelectorAll('input')].every(el=>!!el.labels?.length)};
+            })()""")
+            report.setdefault('appearance',[]).append(appearance)
+            capture(('bar' if dock else 'orb')+'-appearance')
+            window.evaluate_js('applyExpanded(false);')
+            if appearance.get('missing') or appearance.get('bad') or not appearance.get('open') or not appearance.get('named'):
+                report['failures'].append({'appearance':appearance})
+        # A light desktop exposes any shadow abruptly clipped at a transparent window edge.
+        resize(340,300)
+        window.evaluate_js("""S.dock=false;S.expanded=false;S.review=null;S.highContrast=false;S.reducedMotion=false;
+          S.agent={activity:'idle'};S.state='ready';S.speaking=false;S.micMuted=false;S.maeveMuted=false;
+          S.bubble={id:'light-shadow',who:'maeve',text:'A readable glass bubble with a soft shadow that vanishes before the window ends.'};
+          document.body.style.background='#e6e6e6';render();tickBubble(10);""")
+        time.sleep(.7)
+        capture('orb-shadow-light')
+        from PIL import Image
+        with Image.open(OUT/'orb-shadow-light.png') as shot:
+            pixels=shot.convert('RGB')
+            edge_deviation=max(abs(channel-230) for x in (0,pixels.width-1) for y in range(pixels.height) for channel in pixels.getpixel((x,y)))
+        report['windowShadow']={'edgeDeviation':edge_deviation}
+        if edge_deviation>1:report['failures'].append({'windowShadow':report['windowShadow']})
     except Exception as exc:
         report['failures'].append({'error':repr(exc)})
     finally:

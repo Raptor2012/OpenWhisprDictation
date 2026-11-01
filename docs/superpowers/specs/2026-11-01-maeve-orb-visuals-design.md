@@ -1,6 +1,6 @@
 # Maeve orb: ten visual improvements
 
-Status: proposed design, pending user approval. No product code has changed.
+Status: authorized for implementation. The user requested a checkpoint of the existing product, followed by implementation for a keep-or-revert review.
 
 ## Intent
 
@@ -10,7 +10,7 @@ Add all ten requested effects to the existing Maeve orb and toolbar. Make thinki
 
 Recommended builder choice: extend the existing WebGL shader, 2D particle/spectrum canvases, CSS, and Python snapshot bridge. Keep one animation loop. No new rendering dependency.
 
-A second animation framework would duplicate timing, accessibility, and transparency handling. A replacement renderer would discard the existing audio-responsive nebula and broaden this task unnecessarily. Neither is recommended. The user has requested all ten outcomes; this implementation approach remains a proposal.
+A second animation framework would duplicate timing, accessibility, and transparency handling. A replacement renderer would discard the existing audio-responsive nebula and broaden this task unnecessarily. Neither is recommended. The user has requested all ten outcomes; the user authorized implementation using this approach after the checkpoint.
 
 ## Existing behavior and relevant changes
 
@@ -34,6 +34,10 @@ The page already renders a fluid nebula, spectral waveforms, drifting particles,
 Read selected-thread run/request metadata through a bounded, read-only SQLite helper in t3_voice_core.py, throttled independently of 20Hz page polls. The installed database has orchestration_v2_projection_runs and orchestration_v2_projection_runtime_requests. Use explicit unresolved request status and response capability to distinguish approvals from questions; resolve the schema using fixtures and actual metadata, without printing conversation content or credentials. Do not rely on legacy projection tables when v2 data is present. Missing/unsupported metadata yields an unknown/neutral agent activity, never a fabricated approval.
 
 Add snapshot fields for agent activity, approval presence, output activity, visual event counters, appearance preferences, and playback progress. Clear thread-specific state on route changes. Use event counters to prevent poll-driven retriggering. Keep audio counters under the existing output synchronization; do not add database or page work to audio callbacks.
+
+## User screenshot follow-up
+
+The user reported a black vignette with straight vertical sides on a light desktop. Existing broad panel shadows reach the native transparent window boundary and get clipped. Shorten and lighten those shadows and feather only the outer window gutter, keeping panel content fully opaque. Add a light-background pixel check that both outer side columns return to the background color.
 
 ## Layout and performance
 

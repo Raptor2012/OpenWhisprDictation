@@ -6,7 +6,11 @@
   :root { --fg:#f2f3f7; --muted:#a3a9b6; --glass:rgba(20,21,27,.84); --line:rgba(255,255,255,.09);
           --spring:cubic-bezier(.34,1.46,.64,1); --soft:cubic-bezier(.22,1,.36,1); }
   html, body { margin:0; height:100%; background:transparent; overflow:hidden; font-family:"Segoe UI Variable Text","Segoe UI",system-ui,sans-serif; color:var(--fg); user-select:none; -webkit-user-select:none; }
-  #stage { position:absolute; inset:0; }
+  /* Feather only the empty native-window gutter, so shadows cannot end at a hard rectangle. */
+  #stage { position:absolute; inset:0; --edge-x:10px;
+    mask-image:linear-gradient(to right,transparent,#000 var(--edge-x),#000 calc(100% - var(--edge-x)),transparent),linear-gradient(to bottom,transparent,#000 4px,#000 calc(100% - 4px),transparent);
+    mask-composite:intersect; }
+  @media (max-width:220px) { body.bar #stage { --edge-x:2px; } }
   #orbwrap { position:absolute; left:50%; bottom:0; width:180px; height:150px; margin-left:-90px; }
   #orb { position:absolute; inset:0; cursor:pointer; }
   #parts { position:absolute; inset:0; width:180px; height:150px; pointer-events:none; mix-blend-mode:screen; }
@@ -40,7 +44,7 @@
   /* speech bubble (T3 minimized) */
   #bubble { position:absolute; left:50%; bottom:112px; width:300px; margin-left:-150px; box-sizing:border-box;
             background:var(--glass); backdrop-filter:blur(20px) saturate(1.35); border:1px solid var(--line); border-radius:18px;
-            padding:9px 13px 10px; box-shadow:0 14px 40px rgba(0,0,0,.45);
+            padding:9px 13px 10px; box-shadow:0 8px 20px rgba(0,0,0,.26);
             opacity:0; transform:translateY(6px); transform-origin:50% 100%; transition:opacity .18s ease-out, transform .18s var(--soft); pointer-events:none; }
   #bubble.show { opacity:1; transform:none; pointer-events:auto; transition:opacity .22s var(--soft), transform .38s var(--spring); }
   #bubble::after { content:""; position:absolute; left:50%; bottom:-6px; width:12px; height:12px; margin-left:-6px; background:rgba(20,21,27,.92);
@@ -50,7 +54,16 @@
   #bubbleText { position:relative; font-size:13px; line-height:1.45; min-height:1.45em; max-height:113px;
                 overflow:hidden; overflow-anchor:none; white-space:pre-wrap; overflow-wrap:anywhere; }
   #bmeasure { visibility:hidden; pointer-events:none; }
-  #btext { position:absolute; inset:0; overflow:hidden; overflow-anchor:none; }
+  #btext { position:absolute; inset:0; overflow-y:auto; overflow-x:hidden; overflow-anchor:none; scrollbar-width:thin; scrollbar-color:rgba(177,190,218,.4) transparent; }
+  #btext.scrolled { mask-image:linear-gradient(to bottom,transparent,#000 12px); -webkit-mask-image:linear-gradient(to bottom,transparent,#000 12px); }
+  #bubble.settled #btext { animation:settle .65s ease-out; }
+  @keyframes settle { 0% { text-shadow:0 0 9px rgba(190,218,255,.7); } 100% { text-shadow:none; } }
+  #bubble::before, #card::before, #review::before { content:""; position:absolute; left:18px; right:18px; top:0; height:1px; background:linear-gradient(90deg,transparent,rgba(224,236,255,.45),transparent); pointer-events:none; }
+  #playbackTrack { position:absolute; left:19px; right:19px; bottom:2px; height:2px; border-radius:2px; overflow:hidden; background:rgba(195,200,230,.12); opacity:0; pointer-events:none; }
+  #playbackTrack.active { opacity:1; }
+  #playbackFill { height:100%; width:100%; transform-origin:left; background:linear-gradient(90deg,#75e5e0,#bd9cff); }
+  #playbackTrack.indeterminate #playbackFill { width:32%; animation:playbackTravel 1.8s ease-in-out infinite alternate; }
+  @keyframes playbackTravel { from { transform:translateX(0); } to { transform:translateX(210%); } }
   #bubble.you #btext { color:#d9dce3; }
   #bubbleText .word { display:inline-block; max-width:100%; }
   #btext .fresh { animation:ink .42s var(--soft) both; animation-delay:var(--ink-delay,0ms); }
@@ -68,7 +81,7 @@
   /* toolbar (minimized) */
   #bar { position:absolute; left:50%; bottom:4px; width:196px; height:40px; margin-left:-98px; box-sizing:border-box; border-radius:20px;
          display:none; align-items:center; gap:4px; padding:0 6px 0 0; background:rgba(18,19,24,.86); border:1px solid rgba(255,255,255,.10);
-         backdrop-filter:blur(18px) saturate(1.3); box-shadow:0 8px 26px rgba(0,0,0,.42); }
+         backdrop-filter:blur(18px) saturate(1.3); box-shadow:0 4px 12px rgba(0,0,0,.24); }
   body.bar #bar { display:flex; animation:barIn .5s var(--spring); }
   body.bar #orbwrap { display:none; }
   @keyframes barIn { from { transform:scale(.6); opacity:0; } to { transform:none; opacity:1; } }
@@ -88,7 +101,7 @@
   body.bar #cap, body.bar #badge { display:none; }
 
   /* settings card */
-  #card { min-height:200px; position:absolute; left:12px; right:12px; bottom:150px; max-height:calc(100% - 160px); background:var(--glass); backdrop-filter:blur(18px) saturate(1.3); border:1px solid var(--line); border-radius:20px; padding:10px 12px 10px; box-sizing:border-box; opacity:0; transform:translateY(14px) scale(.94); transform-origin:50% 100%; transition:opacity .25s ease, transform .45s var(--spring); pointer-events:none; box-shadow:0 12px 40px rgba(0,0,0,.45); }
+  #card { min-height:200px; position:absolute; left:12px; right:12px; bottom:150px; max-height:calc(100% - 160px); background:var(--glass); backdrop-filter:blur(18px) saturate(1.3); border:1px solid var(--line); border-radius:20px; padding:10px 12px 10px; box-sizing:border-box; opacity:0; transform:translateY(14px) scale(.94); transform-origin:50% 100%; transition:opacity .25s ease, transform .45s var(--spring); pointer-events:none; box-shadow:0 8px 20px rgba(0,0,0,.26); }
   #card.open { opacity:1; transform:none; pointer-events:auto; }
   #devices { position:absolute; inset:0; box-sizing:border-box; padding:12px 14px; border-radius:20px; background:rgba(22,23,29,.97);
              display:none; flex-direction:column; gap:7px; }
@@ -100,7 +113,7 @@
   #devices .dfoot { margin-top:auto; display:flex; justify-content:flex-end; }
   #devices .dfoot span { font-size:11px; color:var(--fg); cursor:pointer; padding:3px 8px; border-radius:7px; background:rgba(255,255,255,.08); }
   #delivery { width:100%; box-sizing:border-box; margin-top:7px; padding:5px 8px; border-radius:9px; border:1px solid var(--line); background:#292b34; color:var(--fg); font:11.5px "Segoe UI",sans-serif; }
-  #review { display:none; position:absolute; left:50%; bottom:112px; width:300px; margin-left:-150px; box-sizing:border-box; padding:11px 13px; border-radius:18px; background:var(--glass); border:1px solid var(--line); backdrop-filter:blur(20px); box-shadow:0 12px 35px rgba(0,0,0,.35); }
+  #review { display:none; position:absolute; left:50%; bottom:112px; width:300px; margin-left:-150px; box-sizing:border-box; padding:11px 13px; border-radius:18px; background:var(--glass); border:1px solid var(--line); backdrop-filter:blur(20px); box-shadow:0 7px 18px rgba(0,0,0,.24); }
   #review.show { display:block; animation:barIn .35s var(--spring); }
   body.bar #review { bottom:56px; }
   #reviewTitle { font-size:10px; color:#c4a8ff; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; margin-bottom:5px; }
@@ -130,7 +143,25 @@
   .foot span { cursor:pointer; padding:2px 4px; border-radius:6px; }
   .foot span:hover { color:var(--fg); background:rgba(255,255,255,.06); }
   #menu { position:absolute; right:14px; bottom:40px; background:rgba(30,31,38,.97); border:1px solid var(--line); border-radius:12px; padding:6px; display:none; min-width:220px; box-shadow:0 10px 30px rgba(0,0,0,.5); }
+  #menu { max-height:calc(100% - 44px); overflow-y:auto; scrollbar-width:thin; }
   #menu.open { display:block; }
+  #appearance { position:absolute; inset:0; padding:12px 14px; border-radius:20px; box-sizing:border-box; background:rgba(22,23,29,.98); display:none; flex-direction:column; gap:10px; }
+  #appearance.open { display:flex; }
+  #card:has(#appearance.open) > :not(#appearance), #card:has(#devices.open) > :not(#devices) { visibility:hidden; }
+  #appearance .dhead { font-size:12.5px; }
+  #appearance label { display:flex; align-items:center; justify-content:space-between; font-size:12px; gap:8px; cursor:pointer; }
+  #appearance input { accent-color:#b4a0ff; width:17px; height:17px; flex:none; }
+  #appearance .dnote { color:var(--muted); font-size:10px; line-height:1.4; }
+  #appearance button { align-self:flex-end; margin-top:auto; border:1px solid var(--line); background:#30323b; color:var(--fg); border-radius:8px; padding:4px 10px; cursor:pointer; }
+  body.high-contrast { --fg:#fff; --muted:#e0e6ef; --glass:rgba(9,12,20,.98); --line:rgba(222,236,255,.65); }
+  body.high-contrast #devices, body.high-contrast #appearance { background:#090c14; }
+  body.high-contrast #btext, body.high-contrast #who, body.high-contrast #bubble.you #btext, body.high-contrast #bubble.you #who { color:#fff; }
+  body.high-contrast #bar { background:#090c14; border-color:#cbd7ee; }
+  body.high-contrast #devices label { color:var(--fg); }
+  body.reduced-motion *, body.reduced-motion *::before, body.reduced-motion *::after { animation:none!important; transition:none!important; scroll-behavior:auto!important; }
+  @media (prefers-reduced-motion:reduce) { *, *::before, *::after { animation:none!important; transition:none!important; scroll-behavior:auto!important; } }
+  body.reduced-motion #playbackTrack.indeterminate #playbackFill { transform:translateX(100%); }
+
   #menu div { padding:5px 10px; font-size:12px; border-radius:8px; cursor:pointer; }
   #menu div:hover { background:rgba(255,255,255,.08); }
   #menu div.on::before { content:"✓ "; color:#8fb0ff; }
@@ -163,6 +194,14 @@
       <div id="mFx">Techno audio effect</div>
       <div id="mDock">Minimize to toolbar</div>
       <div id="mDevices">Audio devices…</div>
+      <div id="mAppearance">Appearance…</div>
+    </div>
+    <div id="appearance" aria-label="Appearance">
+      <div class="dhead">Appearance</div>
+      <label for="contrastSel">High contrast<input id="contrastSel" type="checkbox"></label>
+      <label for="motionSel">Reduced motion<input id="motionSel" type="checkbox"></label>
+      <div class="dnote" id="motionNote">Keeps state colours and audio levels. Windows reduced-motion settings are always respected.</div>
+      <button id="appearanceDone" type="button">Done</button>
     </div>
     <div id="devices" aria-label="Audio devices">
       <div class="dhead">Audio devices</div>
@@ -192,6 +231,7 @@
     <div id="cap" role="status" aria-live="polite"></div>
   </div>
   <div id="bar">
+    <div id="playbackTrack" role="progressbar" aria-label="Maeve playback" aria-valuemin="0" aria-valuemax="100"><div id="playbackFill"></div></div>
     <div id="barOrb" title="Settings"></div>
     <canvas id="wave"></canvas>
     <div class="bbtn" id="barMic" title="Mute my microphone">
@@ -226,6 +266,8 @@ uniform float uAppear;  // 0..1 pop-in
 uniform vec4 uBands;    // smoothed voice energy: low, low-mid, high-mid, high
 uniform float uFlow;    // time that runs faster while someone speaks (never jumps)
 uniform float uParticles; // 0..1 particle presence
+uniform float uThinking, uRipple, uApproval, uIdle, uContrast;
+uniform vec3 uThread;
 
 vec3 hash3(vec3 p){ p = vec3(dot(p,vec3(127.1,311.7,74.7)), dot(p,vec3(269.5,183.3,246.1)), dot(p,vec3(113.5,271.9,124.6))); return -1.0 + 2.0*fract(sin(p)*43758.5453123); }
 float noise(vec3 p){ vec3 i = floor(p); vec3 f = fract(p); vec3 u = f*f*(3.0-2.0*f);
@@ -256,11 +298,22 @@ void main(){
 
   // busy ring
   if (uBusy > 0.001) {
-    float ring = 1.0 - smoothstep(0.0, 0.03, abs(r - 1.24));
-    float a = mod(ang - uSpin, 6.2831853);
-    float seg = smoothstep(0.0, 0.25, a) * (1.0 - smoothstep(uArc-0.35, uArc, a));
-    float ringAlpha = 0.6 * ring * (0.12 + 0.88*seg) * uBusy;
+    float a = mod(uSpin - ang, 6.2831853);
+    float seg = exp(-a*2.8) * (1.0-smoothstep(1.6,2.2,a));
+    float dotted = 0.6 + 0.4*pow(0.5+0.5*cos(a*48.0),4.0);
+    float ring = 1.0-smoothstep(0.01,0.035,abs(r-1.23));
+    float ringAlpha = 0.85 * ring * seg * dotted * uBusy;
     col += vec4(uC * ringAlpha, ringAlpha);
+  }
+
+  if (uRipple > 0.0) {
+    float wave = 1.0-smoothstep(0.008,0.045,abs(r-(1.0+(1.0-uRipple)*0.95)));
+    float alpha = wave*uRipple*0.48;
+    col += vec4(uC*alpha,alpha);
+  }
+  if (uApproval > 0.0) {
+    float edge = exp(-abs(r-1.04)*34.0)*uApproval;
+    col += vec4(vec3(1.0,0.63,0.19)*edge,edge);
   }
 
   // sphere: deep-space nebula with a dark core and a glowing rim (black-hole feel)
@@ -284,6 +337,17 @@ void main(){
     vec4 zone = vec4(1.0 - smoothstep(0.0, 0.4, h), exp(-pow((h-0.38)/0.2, 2.0)), exp(-pow((h-0.66)/0.2, 2.0)), smoothstep(0.65, 1.0, h));
     float rimBand = dot(zone, uBands);                                             // spectrum mapped around the rim
     vec3 c = body + mix(uB, uC, 0.4) * fres * (0.65 + 0.45*uLevel + 1.1*rimBand) + mix(vec3(1.0), uC, 0.6) * spec;
+    // A stable thread rim is independent of functional state colour.
+    c += uThread * pow(r,18.0) * (0.23 + 0.25*uContrast);
+    float spiral = pow(0.5+0.5*cos(ang*2.0+r*11.0+t*1.8),22.0);
+    c += uC * spiral * smoothstep(0.15,0.4,r)*(1.0-smoothstep(0.78,0.96,r))*uThinking*0.3;
+    // Sparse stars stay inside the dark core; reduced motion freezes their time.
+    vec2 grid = floor(d*28.0);
+    vec2 star = fract(hash3(vec3(grid,7.0)).xy*17.0)*0.7+0.15;
+    float point = 1.0-smoothstep(0.025,0.10,length(fract(d*28.0)-star));
+    float sparse = step(0.94,fract(sin(dot(grid,vec2(127.1,311.7)))*43758.54));
+    c += mix(uC,vec3(1.0),0.35)*point*sparse*(1.0-smoothstep(0.65,0.85,r))*(0.10+0.08*sin(t*0.6+grid.x))*uIdle;
+    c += uC*pow(r,12.0)*uContrast*0.35;
     float desat = dot(c, vec3(0.299,0.587,0.114));
     c = mix(c, vec3(desat)*0.9, uOff*0.75);
     float edge = 1.0 - smoothstep(0.985, 1.0, r);
@@ -300,6 +364,9 @@ void main(){
 
 <script>
 const PAL = {
+  thinking:{a:[.08,.12,.34],b:[.32,.43,.88],c:[.70,.80,1.0],glow:.65},
+  approval:{a:[.30,.16,.03],b:[.90,.52,.12],c:[1.0,.79,.37],glow:.85},
+  input:{a:[.19,.13,.36],b:[.61,.44,.85],c:[.88,.78,1.0],glow:.65},
   loading:{a:[.20,.21,.26], b:[.42,.44,.52], c:[.72,.74,.80], glow:.25},
   off:    {a:[.16,.17,.22], b:[.36,.38,.46], c:[.62,.64,.72], glow:.20},
   ready:  {a:[.02,.30,.34], b:[.10,.70,.62], c:[.55,.98,.85], glow:.55},
@@ -317,7 +384,7 @@ const PAL = {
   failed: {a:[.40,.06,.08], b:[1.0,.30,.32], c:[1.0,.72,.70], glow:.9},
   error:  {a:[.40,.06,.08], b:[1.0,.30,.32], c:[1.0,.72,.70], glow:.9}
 };
-const LABEL = { loading:'Loading Maeve…', off:'Voice off', ready:'', hearing:'Listening', transcribing:'Transcribing',
+const LABEL = { thinking:'Thinking', approval:'Waiting for approval', input:'Waiting for your answer', loading:'Loading Maeve…', off:'Voice off', ready:'', hearing:'Listening', transcribing:'Transcribing',
   sending:'Sending', waiting:'Sent', speaking:'', reading:'', stopped:'Stopped', error:'Error',
   dictating:'Dictating', processing:'Writing…', done:'Done', failed:'Dictation failed' };
 
@@ -346,7 +413,7 @@ gl.linkProgram(prog); gl.useProgram(prog);
 const buf = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, buf);
 gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, 1,1]), gl.STATIC_DRAW);
 const aLoc = gl.getAttribLocation(prog, 'a'); gl.enableVertexAttribArray(aLoc); gl.vertexAttribPointer(aLoc, 2, gl.FLOAT, false, 0, 0);
-const U = {}; for (const n of ['uRes','uCenter','uR','uTime','uLevel','uGlow','uBusy','uSpin','uArc','uOff','uA','uB','uC','uAppear','uBands','uFlow','uParticles']) U[n] = gl.getUniformLocation(prog, n);
+const U = {}; for (const n of ['uRes','uCenter','uR','uTime','uLevel','uGlow','uBusy','uSpin','uArc','uOff','uA','uB','uC','uAppear','uBands','uFlow','uParticles','uThinking','uRipple','uApproval','uIdle','uContrast','uThread']) U[n] = gl.getUniformLocation(prog, n);
 gl.enable(gl.BLEND); gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
 
 let S = {state:'loading', text:'', mic:0, out:0, voiceOn:false, mode:'openwhispr', thread:'', threads:[], detail:'', cleanup:false, startup:false,
@@ -379,11 +446,39 @@ function gainedBands(source, bands, dt){
 }
 let liveBands = new Array(11).fill(0);
 function playbackActive(){return !!S.speaking || S.state==='speaking';}
-function visualState(){return ['hearing','dictating'].includes(S.state)?S.state:playbackActive()?'speaking':S.state;}
+function visualState(){
+  if(['hearing','dictating'].includes(S.state))return S.state;
+  if(S.agent?.activity==='approval')return 'approval';
+  if(S.agent?.activity==='input')return 'input';
+  if(playbackActive())return 'speaking';
+  if(['transcribing','processing','sending'].includes(S.state))return S.state;
+  return S.agent?.activity==='thinking'?'thinking':S.state;
+}
+const systemMotion = matchMedia('(prefers-reduced-motion: reduce)');
+function motionReduced(){return !!S.reducedMotion||systemMotion.matches;}
+function visualMotion(now){return motionReduced()?0:now/1000;}
+function threadAccent(id){
+  if(!id)return [.3,.4,.5];
+  let h=2166136261;for(const c of id){h=Math.imul(h^c.charCodeAt(0),16777619);}
+  const hue=((h>>>0)%360)/60, x=1-Math.abs(hue%2-1);
+  const rgb=hue<1?[1,x,0]:hue<2?[x,1,0]:hue<3?[0,1,x]:hue<4?[0,x,1]:hue<5?[x,0,1]:[1,0,x];
+  return rgb.map(v=>.28+.55*v);
+}
+let seenSent=null, seenInterrupt=null, rippleAt=-Infinity, contractionAt=-Infinity;
+function effectState(now){
+  const events=S.visualEvents||{},calm=motionReduced(),state=visualState();
+  if(events.sent!==undefined&&events.sent!==seenSent){if(seenSent!==null)rippleAt=now;seenSent=events.sent;}
+  if(events.interrupt!==undefined&&events.interrupt!==seenInterrupt){if(seenInterrupt!==null)contractionAt=now;seenInterrupt=events.interrupt;}
+  const age=Math.max(0,(now-contractionAt)/1000);
+  return {time:visualMotion(now),thinking:state==='thinking',approval:state==='approval',
+    ripple:calm?0:Math.max(0,1-(now-rippleAt)/850),
+    contraction:calm?0:Math.max(0,1-age/.38)*Math.exp(-age*5),
+    trail:calm?0:['thinking','transcribing','sending','processing'].includes(state)?1:0};
+}
 
 function frame(now){
   const dt = Math.min(0.05, (now - lastT)/1000); lastT = now;
-  const state = visualState(), p = PAL[state] || PAL.off;
+  const state = visualState(), p = PAL[state] || PAL.off, fx = effectState(now), calm = motionReduced();
   sA.t = p.a; sB.t = p.b; sC.t = p.c; sGlow.t = p.glow;
   const micSide = state==='hearing'||state==='dictating';
   liveBands = micSide ? gainedBands('mic', S.micBands, dt) : playbackActive() ? gainedBands('out', S.outBands, dt) : liveBands.map(v=>v*Math.exp(-dt*6));
@@ -392,34 +487,41 @@ function frame(now){
   audioS += (audio - audioS) * (1 - Math.exp(-dt * (audio > audioS ? 20 : 6)));
   sLevel.t = audioS;
   sLevel.k = audioS > sLevel.x ? 170 : 70; sLevel.d = audioS > sLevel.x ? 26 : 17;
-  sBusy.t = (state==='transcribing'||state==='sending'||state==='processing') ? 1 : 0;
+  sBusy.t = fx.trail;
   sOff.t = S.voiceOn || playbackActive() || ['dictating','processing','done','failed'].includes(state) ? 0 : 1;
   sAppear.t = (S.visible || hovering || expanded || barMode) ? 1 : 0;
   if (state !== lastState) { sScale.v += (state==='hearing'||state==='speaking'||state==='dictating') ? 0.8 : state==='done' ? 1.3 : (state==='error'||state==='failed') ? -0.7 : 0.45; lastState = state; }
-  const breathe = 1 + 0.018*Math.sin(now/1700) + 0.006*Math.sin(now/730);
+  const breathe = calm ? 1 : 1 + 0.018*Math.sin(now/1700) + 0.006*Math.sin(now/730);
   sScale.t = breathe * (1 + 0.3*sLevel.x);
   const talking = ['hearing','dictating'].includes(state) || playbackActive();
   const groups = talking ? bandGroups(liveBands) : [0,0,0,0];
   for (let k = 0; k < 4; k++) { const g = Math.min(1, groups[k]*1.6); quad[k] += (g - quad[k]) * (1 - Math.exp(-dt * (g > quad[k] ? 9 : 3.5))); }
   const busyNow = state==='transcribing'||state==='sending'||state==='processing';
-  flow += dt * (0.5 + 2.0*sLevel.x + (busyNow ? 0.3 : 0));
+  if(!calm) flow += dt * (0.5 + 2.0*sLevel.x + (busyNow ? 0.3 : 0));
   sPart.t = talking ? 0.55 + 0.45*Math.min(1, sLevel.x*1.5) : busyNow ? 0.4 : (S.visible ? 0.18 : 0);
-  const lvl = sLevel.step(dt), scale = sScale.step(dt), glow = sGlow.step(dt), b = sBusy.step(dt), off = sOff.step(dt);
+  if(calm){sScale.x=sScale.t=1;sScale.v=0;sAppear.x=sAppear.t;sAppear.v=0;}
+  const lvl = sLevel.step(dt), scale = sScale.step(dt)*(1-.18*fx.contraction), glow = sGlow.step(dt), b = sBusy.step(dt), off = sOff.step(dt);
   const appear = sAppear.step(dt);
   const A = sA.step(dt), B = sB.step(dt), C = sC.step(dt);
-  spin += dt * 3.0;
+  if(!calm)spin += dt * (S.agent?.producing ? 2.1 : .7);
   gl.viewport(0, 0, cv.width, cv.height);
   gl.clearColor(0,0,0,0); gl.clear(gl.COLOR_BUFFER_BIT);
   gl.uniform2f(U.uRes, cv.width, cv.height);
   gl.uniform2f(U.uCenter, CX*dpr, (H-CY)*dpr);
   gl.uniform1f(U.uR, R*dpr*scale*(0.35 + 0.65*Math.max(0, appear)));
   gl.uniform1f(U.uAppear, Math.max(0, Math.min(1, appear)));
-  gl.uniform1f(U.uTime, now/1000);
+  gl.uniform1f(U.uTime, fx.time);
+  gl.uniform1f(U.uThinking, fx.thinking ? 1 : 0);
+  gl.uniform1f(U.uRipple, fx.ripple);
+  gl.uniform1f(U.uApproval, fx.approval ? (calm ? .65 : .5+.25*Math.sin(fx.time*2.6)) : 0);
+  gl.uniform1f(U.uIdle, ['ready','off','stopped'].includes(state) ? 1 : 0);
+  gl.uniform1f(U.uContrast, S.highContrast ? 1 : 0);
+  gl.uniform3fv(U.uThread, threadAccent(S.thread));
   gl.uniform1f(U.uLevel, Math.max(0, lvl));
   gl.uniform4f(U.uBands, quad[0], quad[1], quad[2], quad[3]);
-  gl.uniform1f(U.uFlow, flow);
+  gl.uniform1f(U.uFlow, calm ? 0 : flow);
   gl.uniform1f(U.uParticles, Math.max(0, sPart.step(dt)));
-  gl.uniform1f(U.uGlow, glow); gl.uniform1f(U.uBusy, b); gl.uniform1f(U.uSpin, spin);
+  gl.uniform1f(U.uGlow, glow); gl.uniform1f(U.uBusy, calm ? 0 : b); gl.uniform1f(U.uSpin, calm ? 0 : spin);
   gl.uniform1f(U.uArc, 1.4); gl.uniform1f(U.uOff, off);
   gl.uniform3fv(U.uA, A); gl.uniform3fv(U.uB, B); gl.uniform3fv(U.uC, C);
   gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
@@ -440,7 +542,7 @@ function spectrumAt(u){ const x = u*(BARS-1), i = Math.floor(x), f = x - i; retu
 function drawWave(dt, C){
   const state=visualState(), busy = state==='processing'||state==='transcribing'||state==='sending';
   const canvas = barMode ? wave : orbWave, ctx = barMode ? wctx : octx;
-  const Wc = canvas.width, Hc = canvas.height, mid = Hc/2, t = performance.now()/1000;
+  const Wc = canvas.width, Hc = canvas.height, mid = Hc/2, t = visualMotion(performance.now());
   ctx.clearRect(0, 0, Wc, Hc);
   const rgb = C.map(v=>Math.round(Math.min(1,v)*255)).join(',');
   const gap = Wc / SLOTS, bw = Math.max(1.2*dpr, gap*0.34);
@@ -453,7 +555,8 @@ function drawWave(dt, C){
     const v = Math.max(0, slotS[i].step(dt));
     const h = Math.max(1.4*dpr, v * Hc * 0.92);
     const x = i*gap + (gap-bw)/2;
-    ctx.fillStyle = `rgba(${rgb},${(0.22 + 0.68*Math.min(1, v*1.4)) * (1 - 0.45*freq)})`;
+    const tint = barMode ? [0.40+0.34*u,0.88-0.27*u,0.98] : C;
+    ctx.fillStyle = `rgba(${tint.map(v=>Math.round(Math.min(1,v)*255)).join(',')},${(S.highContrast ? .85 : 0.22 + 0.68*Math.min(1, v*1.4)) * (1 - 0.45*freq)})`;
     ctx.beginPath(); ctx.roundRect(x, mid - h/2, bw, h, bw/2); ctx.fill();
   }
 }
@@ -465,7 +568,7 @@ const MOTES = Array.from({length:46}, (_, i)=>({a: Math.random()*Math.PI*2, r: 1
   s: 0.25 + Math.random()*0.45, dir: Math.random() < .5 ? -1 : 1, size: 0.35 + Math.random()*0.75, seed: Math.random()*100}));
 let partFade = 0;
 function drawParticles(dt, B, C, appear){
-  if (barMode) return;
+  if (barMode || motionReduced()) {pctx.clearRect(0,0,parts.width,parts.height);return;}
   const state = visualState(), talking = ['hearing','dictating'].includes(state) || playbackActive();
   partFade += ((S.visible ? (talking ? 1 : 0.55) : 0) - partFade) * (1 - Math.exp(-dt*3));
   pctx.clearRect(0, 0, parts.width, parts.height);
@@ -493,7 +596,9 @@ const bubbleEl = document.getElementById('bubble'), btext = document.getElementB
 const bubbleText = document.getElementById('bubbleText'), bmeasure = document.getElementById('bmeasure');
 let bid = null, bwords = [], shown = 0, rendered = -1, freshFrom = 0;
 let bubbleNodes = [];
-let measuredBubbleText = null, reservedBubbleHeight = 0;
+let measuredBubbleText = null, reservedBubbleHeight = 0, followBubble=true, wasUnfinished=false;
+function updateBubbleMask(){btext.classList.toggle('scrolled',btext.scrollTop>1);}
+btext.addEventListener('scroll',()=>{followBubble=btext.scrollHeight-btext.clientHeight-btext.scrollTop<8;updateBubbleMask();});
 function reserveBubbleText(tokens){
   // The full payload reserves its final layout before individual words appear.
   const fragment=document.createDocumentFragment();
@@ -536,7 +641,8 @@ function paintBubble(tokens){
   bubbleNodes.forEach((item,i)=>{const gap=i<tokens.length-1?tokens[i].gap:'';if(item.gap.textContent!==gap)item.gap.textContent=gap;});
   // Layout offsets exclude a new word's animated translateY; scrollHeight does not.
   const last=bubbleNodes[bubbleNodes.length-1]?.node;
-  btext.scrollTop=last?Math.max(0,last.offsetTop+last.offsetHeight-btext.clientHeight):0;
+  if(followBubble)btext.scrollTop=last?Math.max(0,last.offsetTop+last.offsetHeight-btext.clientHeight):0;
+  updateBubbleMask();
 }
 function tickBubble(dt){
   const B = S.bubble;
@@ -544,9 +650,12 @@ function tickBubble(dt){
   if (B.id !== bid) {
     bid = B.id; shown = 0; rendered = -1; freshFrom = 0;
     bubbleNodes=[];btext.replaceChildren();
-    measuredBubbleText=null;reservedBubbleHeight=0;
+    measuredBubbleText=null;reservedBubbleHeight=0;followBubble=true;wasUnfinished=!!(B.live||B.processing);bubbleEl.classList.remove('settled');
     bubbleEl.classList.toggle('you', B.who === 'you');
   }
+  const unfinished=!!(B.live||B.processing);
+  if(wasUnfinished&&!unfinished)bubbleEl.classList.add('settled');
+  wasUnfinished=unfinished;
   setText(whoEl,B.who === 'you' ? (B.live ? 'You · live' : B.processing ? 'You · transcribing' : 'You') : (S.maeveMuted ? 'Maeve · muted' : 'Maeve'));
   const tokens = [...B.text.matchAll(/(\S+)(\s*)/g)].map(m=>({word:m[1],gap:m[2]}));
   if(measuredBubbleText!==B.text){reserveBubbleText(tokens);measuredBubbleText=B.text;}
@@ -573,6 +682,17 @@ let reviewId = null;
 let settingsGeneration = 0, settingsPending = 0, settingsWrites = Promise.resolve();
 function setText(el,value){if(el.textContent!==value)el.textContent=value;}
 function render(){
+  document.body.classList.toggle('high-contrast',!!S.highContrast);
+  document.body.classList.toggle('reduced-motion',motionReduced());
+  document.getElementById('contrastSel').checked=!!S.highContrast;
+  document.getElementById('motionSel').checked=!!S.reducedMotion;
+  document.getElementById('motionNote').textContent=systemMotion.matches?'Windows reduced motion is active. Colours and audio levels remain visible.':'Keeps state colours and audio levels. Windows reduced-motion settings are always respected.';
+  const progress=S.playback, track=document.getElementById('playbackTrack'), fill=document.getElementById('playbackFill');
+  track.classList.toggle('active',!!progress?.active);
+  track.classList.toggle('indeterminate',!!progress?.active&&progress.fraction==null);
+  track.setAttribute('aria-hidden',String(!progress?.active));
+  if(progress?.fraction!=null){const n=Math.max(0,Math.min(1,progress.fraction));fill.style.transform=`scaleX(${n})`;track.setAttribute('aria-valuenow',String(Math.round(n*100)));track.setAttribute('aria-valuetext',`${Math.round(n*100)}% played`);}
+  else {fill.style.transform='';track.removeAttribute('aria-valuenow');track.setAttribute('aria-valuetext','Reply still being generated');}
   document.body.classList.toggle('audio-active',['hearing','dictating'].includes(S.state)||playbackActive());
   if (S.review) applyExpanded(false);
   else if (!settingsPending && S.expanded !== undefined && expanded !== !!S.expanded) applyExpanded(!!S.expanded);
@@ -593,7 +713,8 @@ function render(){
     document.getElementById('reviewTitle').title = S.review.error || S.review.title || '';
   }
   document.getElementById('delivery').value = S.delivery || 'immediate';
-  const label = S.text || LABEL[S.state] || '';
+  const vs=visualState();
+  const label = ['approval','input','thinking'].includes(vs)?LABEL[vs]:S.text || LABEL[S.state] || '';
   setText(cap,label);
   cap.classList.toggle('show', !!label && S.visible && !S.bubble && !hovering && !expanded);
   muteMic.classList.toggle('muted', S.micMuted);   muteMic.title = S.micMuted ? 'Resume T3 voice input' : 'Pause T3 voice input';
@@ -610,6 +731,8 @@ function render(){
   setText(document.getElementById('threadName'),S.threadTitle || 'Choose a thread');
   document.getElementById('threadBtn').title = (S.followActive ? 'Following T3 · ' : 'Pinned · ') + (S.threadTitle || 'Choose a thread');
   document.getElementById('barOrb').title = document.getElementById('threadBtn').title;
+  document.getElementById('barOrb').setAttribute('aria-label',(label?label+'; ':'')+document.getElementById('threadBtn').title);
+  cv.setAttribute('aria-label','Open settings'+(label?'; '+label:''));
   document.getElementById('mFollow').classList.toggle('on', !!S.followActive);
   const pv = document.getElementById('pVoice'); pv.textContent = S.voiceOn ? 'Voice on' : 'Voice off'; pv.classList.toggle('on', S.voiceOn);
   setText(document.getElementById('pMode'),'Hold to talk');
@@ -629,14 +752,16 @@ function render(){
 }
 const Q = new URLSearchParams(location.search), DEMO = Q.get('demo');
 function api(name, ...args){ if (!DEMO && window.pywebview) return pywebview.api[name](...args); }
-function acceptSnapshot(next, generation, wasPending){
+function acceptSnapshot(next, generation, wasPending, appearanceVersion=appearanceGeneration, appearanceWasPending=false){
+  if(appearanceWasPending||appearancePending||appearanceVersion!==appearanceGeneration){next.highContrast=S.highContrast;next.reducedMotion=S.reducedMotion;}
   // A poll already in flight must not undo a newer click or a write it raced with.
   if (wasPending || settingsPending || generation !== settingsGeneration) next.expanded = expanded;
   S = next; render();
 }
 async function poll(){
   const generation = settingsGeneration, wasPending = settingsPending > 0;
-  try { acceptSnapshot(await pywebview.api.poll(choosingDelivery), generation, wasPending); } catch(e){}
+  const appearanceVersion=appearanceGeneration, appearanceWasPending=appearancePending>0;
+  try { acceptSnapshot(await pywebview.api.poll(choosingDelivery), generation, wasPending, appearanceVersion, appearanceWasPending); } catch(e){}
   setTimeout(poll, 50);
 }
 if (DEMO) {
@@ -656,7 +781,7 @@ if (DEMO) {
   window.addEventListener('pywebviewready', poll);
 }
 let wantExpanded = false;   // the latest requested state; the card opens only after the window grows
-function applyExpanded(v){ expanded=v; wantExpanded=v; card.classList.toggle('open', v); if(!v){ devicesEl?.classList.remove('open'); choosingDelivery=false; } if(!v){document.getElementById('list').classList.remove('open'); document.getElementById('menu').classList.remove('open');} }
+function applyExpanded(v){ expanded=v; wantExpanded=v; card.classList.toggle('open', v); if(!v){ devicesEl?.classList.remove('open'); document.getElementById('appearance').classList.remove('open'); choosingDelivery=false; } if(!v){document.getElementById('list').classList.remove('open'); document.getElementById('menu').classList.remove('open');} }
 function setExpanded(v){
   if (S.review || wantExpanded===v) return;
   wantExpanded = v;
@@ -711,12 +836,26 @@ function fillSelect(sel, items, current){
   sel.value = items.some(d => d.name === current) ? current : '';
 }
 async function openDevices(){
-  closeMenu(); devicesEl.classList.add('open');
+  closeMenu(); document.getElementById('appearance').classList.remove('open'); devicesEl.classList.add('open');
   const list = await api('audio_devices');
   if (!list) return;
   fillSelect(spkSel, list.outputs, list.speaker); fillSelect(micSel, list.inputs, list.mic);
 }
 document.getElementById('mDevices').onclick = ()=> openDevices();
+function openAppearance(){closeMenu();devicesEl.classList.remove('open');document.getElementById('appearance').classList.add('open');}
+document.getElementById('mAppearance').onclick=openAppearance;
+document.getElementById('appearanceDone').onclick=()=>document.getElementById('appearance').classList.remove('open');
+let appearanceWrites=Promise.resolve(), appearancePending=0, appearanceGeneration=0;
+function saveAppearance(){
+  const contrast=document.getElementById('contrastSel').checked, motion=document.getElementById('motionSel').checked;
+  S.highContrast=contrast;S.reducedMotion=motion;render();
+  ++appearancePending;++appearanceGeneration;
+  const bridge=api;
+  appearanceWrites=appearanceWrites.then(()=>bridge('set_appearance',contrast,motion)).catch(()=>{}).finally(()=>{--appearancePending;});
+}
+document.getElementById('contrastSel').onchange=saveAppearance;
+document.getElementById('motionSel').onchange=saveAppearance;
+systemMotion.addEventListener('change',render);
 document.getElementById('devDone').onclick = ()=> devicesEl.classList.remove('open');
 spkSel.addEventListener('change', ()=> api('set_speaker_device', spkSel.value));
 micSel.addEventListener('change', ()=> api('set_mic_device', micSel.value));

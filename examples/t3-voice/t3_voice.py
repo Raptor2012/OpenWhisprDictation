@@ -30,7 +30,7 @@ import webview
 from diagnostics import write_status
 from live_reader import ContinuousAudio
 from live_reader_core import Message
-from t3_voice_core import (DictationPreview, DictationWatch, VoiceFx, matching_user_submission, read_agent_activity, audio_device_choices, resolve_audio_device, OpenWhisprFeed, Routes, StreamingFeed, UtteranceGate, cleanup_text,
+from t3_voice_core import (DictationPreview, DictationWatch, VoiceFx, remove_sent_draft_text, matching_user_submission, read_agent_activity, audio_device_choices, resolve_audio_device, OpenWhisprFeed, Routes, StreamingFeed, UtteranceGate, cleanup_text,
                            audio_feedback, list_threads, parse_hotkey, parse_thread_url, read_env, send_message, transcribe)
 
 ROOT = Path(__file__).resolve().parent
@@ -218,6 +218,9 @@ class Engine:
         self.hwnd = None
         self.size = COMPACT
         self.viewport_target = COMPACT
+        self.orb_anchor = None
+        self.drag_gesture = 0
+        self.drag_origin = None
         self.expanded = False
         self.panel_extra = False
         self.hovered = False
@@ -432,43 +435,67 @@ class Engine:
             self.set_review_focus(False)
         self.update_mic()
 
-    def draft_in_composer(self, ticket, text):
-        """Semantic accessibility edit, never keystrokes or a clipboard paste into an arbitrary app."""
+    def composer_control(self, ticket):
+        """Find the single exact-thread composer using semantic accessibility, without focus or input."""
         from System import IntPtr
         from System.Windows.Automation import AutomationElement, ControlType, PropertyCondition, TreeScope, ValuePattern
         hwnd = find_t3_window()
         if not hwnd:
-            raise RuntimeError('Open the destination thread in T3 to insert a draft.')
+            raise RuntimeError('Open the destination thread in T3 first.')
         root = AutomationElement.FromHandle(IntPtr(hwnd))
         docs = root.FindAll(TreeScope.Descendants, PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Document))
-        environment = (Path.home() / '.t3/userdata/environment-id').read_text().strip()
+        environment = (Path.home()/'.t3/userdata/environment-id').read_text().strip()
         for doc in docs:
-            url = str(doc.GetCurrentPattern(ValuePattern.Pattern).Current.Value)
-            if parse_thread_url(url, environment) != ticket.thread:
+            doc_value = doc.GetCurrentPattern(ValuePattern.Pattern)
+            if parse_thread_url(str(doc_value.Current.Value),environment) != ticket.thread:
                 continue
-            edits = doc.FindAll(TreeScope.Descendants, PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Edit))
+            edits = doc.FindAll(TreeScope.Descendants,PropertyCondition(AutomationElement.ControlTypeProperty,ControlType.Edit))
             editors = [edit for edit in edits if 'composer-tiptap' in str(edit.Current.ClassName).split()]
-            if len(editors) != 1:
-                break
-            editor = editors[0]
-            value = editor.GetCurrentPattern(ValuePattern.Pattern)
-            previous = str(value.Current.Value)
-            if self.mode == 'openwhispr' and previous.rstrip().endswith(text):
-                return  # OpenWhispr may already have pasted this dictation into the composer.
-            if not previous.strip():
-                previous = ''
-            draft = (previous + '\n\n' if previous else '') + text
-            # Recheck both route and user mute/selection before the mutation.
-            if (parse_thread_url(str(doc.GetCurrentPattern(ValuePattern.Pattern).Current.Value), environment) != ticket.thread
-                    or not self.routes.current(ticket)):
-                break
-            value.SetValue(draft)
-            if str(value.Current.Value).strip().replace('\r\n', '\n') != draft.strip().replace('\r\n', '\n'):
-                raise RuntimeError('T3 did not confirm the draft text. Nothing was sent.')
-            if user32.GetForegroundWindow() == hwnd:
-                editor.SetFocus()
+            if len(editors)==1:
+                editor = editors[0]
+                return hwnd,doc_value,editor.GetCurrentPattern(ValuePattern.Pattern),editor,environment
+            break
+        raise RuntimeError('The exact destination composer is not accessible.')
+
+    def draft_in_composer(self, ticket, text):
+        hwnd,doc_value,value,editor,environment = self.composer_control(ticket)
+        previous = str(value.Current.Value)
+        if self.mode == 'openwhispr' and previous.rstrip().endswith(text):
             return
-        raise RuntimeError('Open the captured destination thread in T3 first. Nothing was sent.')
+        if not previous.strip():
+            previous = ''
+        draft = (previous+'\n\n' if previous else '')+text
+        if (parse_thread_url(str(doc_value.Current.Value),environment) != ticket.thread
+                or not self.routes.current(ticket)):
+            raise RuntimeError('The destination changed. Nothing was inserted.')
+        value.SetValue(draft)
+        if str(value.Current.Value).strip().replace('\r\n','\n') != draft.strip().replace('\r\n','\n'):
+            raise RuntimeError('T3 did not confirm the draft text. Nothing was sent.')
+        if user32.GetForegroundWindow()==hwnd:
+            editor.SetFocus()
+
+    def clear_sent_composer(self, ticket, text, source_text):
+        hwnd,doc_value,value,editor,environment = self.composer_control(ticket)
+        if user32.GetForegroundWindow()==hwnd:
+            return 'active'
+        previous = str(value.Current.Value)
+        replacement = None
+        # The original paste has provenance; edited text may be a substring of it.
+        for candidate in dict.fromkeys((source_text,text)):
+            if candidate:
+                replacement = remove_sent_draft_text(previous,candidate)
+                if replacement is not None:
+                    break
+        if replacement is None:
+            return 'kept'
+        # A changed route, typing, or return to T3 must never erase a newer draft.
+        if (not self.routes.current(ticket)
+                or parse_thread_url(str(doc_value.Current.Value),environment) != ticket.thread):
+            return 'changed'
+        if str(value.Current.Value)!=previous or user32.GetForegroundWindow()==hwnd:
+            return 'changed'
+        value.SetValue(replacement)
+        return 'cleared' if str(value.Current.Value)==replacement else 'unconfirmed'
 
     def cue(self, steps, ms=70):
         if self.audio:
@@ -794,6 +821,9 @@ class Engine:
         threading.Thread(target=self.deliver_text, args=(text, ticket, asr_ms, started, approved), daemon=True).start()
 
     def deliver_text(self, text, ticket, asr_ms, started, approved=False):
+        source_text = text
+        if approved and self.review and self.review.get('ticket') == ticket:
+            source_text = self.review.get('sourceText',text)
         try:
             if self.cleanup and not approved:
                 text = cleanup_text(text)
@@ -803,7 +833,7 @@ class Engine:
             if self.follow_active and not approved and (not self.active_thread or self.active_thread['id'] != ticket.thread):
                 raise RuntimeError('The open T3 thread changed during capture. Please speak again for the new thread.')
             if self.delivery == 'review' and not approved:
-                self.notice.put(('review', (text, ticket, asr_ms, started)))
+                self.notice.put(('review', (text, ticket, asr_ms, started, source_text)))
                 return
             if self.delivery == 'composer' and not approved:
                 self.draft_in_composer(ticket, text)
@@ -813,6 +843,11 @@ class Engine:
             send_message(ticket.thread, text)
             self.notice.put(('you', text))
             self.notice.put(('sent', (len(text.split()), asr_ms, (time.perf_counter() - started) * 1000)))
+            try:
+                composer_status = self.clear_sent_composer(ticket,text,source_text)
+            except Exception:
+                composer_status = 'unavailable'  # cleanup failure is never a failed send or retry
+            self.notice.put(('composer-cleanup',composer_status))
         except Exception as exc:
             self.notice.put(('send-error', type(exc).__name__ + ': ' + str(exc)[:120]))
 
@@ -990,10 +1025,10 @@ class Engine:
             while True:
                 kind, value = self.notice.get_nowait()
                 if kind == 'review':
-                    text, ticket, asr, started = value
+                    text, ticket, asr, started, *source = value
                     if self.routes.current(ticket):
                         self.review_seq += 1
-                        self.review = {'id': self.review_seq, 'text': text, 'ticket': ticket, 'asr': asr,
+                        self.review = {'id': self.review_seq, 'text': text, 'sourceText': source[0] if source else text, 'ticket': ticket, 'asr': asr,
                                        'since': self.dictation_started_wall or (time.time()-max(0,time.perf_counter()-started)),
                                        'started': started, 'title': next((t['title'] for t in self.threads if t['id'] == ticket.thread), '')}
                         self.review_poll_at = 0.0
@@ -1111,6 +1146,12 @@ class Engine:
                     self.sent_at = time.monotonic()
                     self.detail = 'Sent %d words · ASR %.0f ms · total %.0f ms' % (words, asr_ms, total_ms)
                     self.cue([784, 1047], 55)
+                elif kind == 'composer-cleanup':
+                    self.meta['composerCleanup'] = value
+                    if value == 'cleared':
+                        self.detail += ' \u00b7 chat draft cleared'
+                    elif value in ('active','changed','unavailable','unconfirmed'):
+                        self.detail += ' \u00b7 chat draft kept'
                 elif kind == 'you':
                     self.show_bubble('you', value, None, 3.0)
                 elif kind == 'send-error':
@@ -1383,7 +1424,7 @@ class Engine:
         return (rect.left + rect.right) // 2, rect.bottom
 
     def remember_anchor(self):
-        cx, bottom = self.anchor()
+        cx, bottom = self.orb_anchor or self.anchor()
         if [cx, bottom] != self.prefs.get('anchor'):
             self.prefs.set('anchor', [cx, bottom])
 
@@ -1391,7 +1432,7 @@ class Engine:
         """Resize around a fixed bottom-centre anchor so the orb itself never jumps."""
         if size == self.size and anchor is None:
             return
-        cx, bottom = anchor or self.anchor()
+        cx, bottom = anchor or self.orb_anchor or self.anchor()
         scale = self.scale()
         width, height = int(size[0] * scale), int(size[1] * scale)
         monitor = user32.MonitorFromPoint(wintypes.POINT(int(cx), int(bottom)-20), 2)
@@ -1399,12 +1440,33 @@ class Engine:
         info.size = ctypes.sizeof(info)
         if user32.GetMonitorInfoW(monitor, ctypes.byref(info)):
             width, height = min(width, info.work.right-info.work.left), min(height, info.work.bottom-info.work.top)
-            cx, bottom = clamp_anchor((cx,bottom), (width,height),
+            # Keep room for normal settings and bubbles even while compact. Otherwise the
+            # monitor clamp itself moves the orb on each open/close near a screen edge.
+            reserve = (max(width,int(BUBBLE[0]*scale)),max(height,int(CARD[1]*scale)))
+            cx, bottom = clamp_anchor((cx,bottom),reserve,
                                       (info.work.left,info.work.top,info.work.right,info.work.bottom))
+        cx,bottom = round(cx),round(bottom)
+        self.orb_anchor = (cx,bottom)
         user32.SetWindowPos(self.hwnd, HWND_TOPMOST, int(cx - width / 2), int(bottom - height), width, height,
                             SWP_NOACTIVATE)
         self.viewport_target = (width / scale, height / scale)
         self.size = size
+
+    def drag_window(self, gesture, dx, dy):
+        """Only deliberate page drags reach here; deltas always refer to one fixed origin."""
+        with self.lock:
+            if not self.hwnd or gesture < self.drag_gesture:
+                return
+            if gesture != self.drag_gesture:
+                self.drag_gesture = gesture
+                self.drag_origin = self.anchor()
+            if self.drag_origin is None:
+                return
+            scale = self.scale()
+            cx,bottom = self.drag_origin
+            self.card_close_deadline = None
+            self.pin_until = time.monotonic()+LINGER
+            self.place(self.target_size(),anchor=(cx+dx*scale,bottom+dy*scale))
 
     def attach(self, hwnd):
         """Called once the native window exists: position it on the saved anchor or the work-area corner."""
@@ -1412,7 +1474,7 @@ class Engine:
         # pywebview must initialize pythonnet first; concurrent clr imports can break its startup.
         threading.Thread(target=self.watch_active_thread, daemon=True).start()
         saved = self.prefs.get('anchor')
-        if not (saved and user32.MonitorFromPoint(wintypes.POINT(saved[0], saved[1] - 20), 0)):
+        if not (saved and user32.MonitorFromPoint(wintypes.POINT(int(saved[0]), int(saved[1]) - 20), 0)):
             area = wintypes.RECT()
             user32.SystemParametersInfoW(0x30, 0, ctypes.byref(area), 0)
             scale = self.scale()
@@ -1533,6 +1595,9 @@ class Api:
     def set_expanded(self, expanded):
         return self._engine.set_expanded(bool(expanded))
 
+    def drag_window(self, gesture, dx, dy):
+        self._engine.drag_window(gesture, dx, dy)
+
     def set_hover(self, hovered):
         self._engine.set_hover(bool(hovered))
 
@@ -1580,7 +1645,7 @@ def main():
     engine = Engine(args.thread)
     window = webview.create_window('Maeve', url=str(ROOT / 'ui/orb.html'), js_api=Api(engine),
                                    width=COMPACT[0], height=COMPACT[1], x=0, y=0, frameless=True,
-                                   transparent=True, on_top=True, easy_drag=True, resizable=False, focus=False,
+                                   transparent=True, on_top=True, easy_drag=False, resizable=False, focus=False,
                                    min_size=(100, BAR[1]), background_color='#000000')
     engine.window = window
     window.events.closed += engine.close

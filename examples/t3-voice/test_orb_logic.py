@@ -16,7 +16,7 @@ from live_reader_core import Message
 
 def engine(**fields):
     e = t3_voice.Engine.__new__(t3_voice.Engine)
-    defaults = dict(card_close_deadline=None,review_poll_at=0,dictation_started_wall=0,settled_feed_run='',synthesis_done_run='',agent={},visual_events={'sent':0,'interrupt':0},high_contrast=False,reduced_motion=False,choosing_delivery=False, mic_device="", speaker_device="", asr_pending=0, panel_extra=False, review=None, delivery='immediate', follow_active=False, active_thread=None, dock=False, dict_state='', expanded=False, hovered=False, pin_until=0.0, pending=None, state='ready', confirmed=False,
+    defaults = dict(orb_anchor=None,card_close_deadline=None,review_poll_at=0,dictation_started_wall=0,settled_feed_run='',synthesis_done_run='',agent={},visual_events={'sent':0,'interrupt':0},high_contrast=False,reduced_motion=False,choosing_delivery=False, mic_device="", speaker_device="", asr_pending=0, panel_extra=False, review=None, delivery='immediate', follow_active=False, active_thread=None, dock=False, dict_state='', expanded=False, hovered=False, pin_until=0.0, pending=None, state='ready', confirmed=False,
                     sent_at=0.0, error_at=0.0, t3_min=False, bubble=None, bubble_until=0.0, bubble_seq=0,
                     bubble_run=None, silent=deque(), meta={}, dict_preview_text='', dict_preview_until=0,
                     dict_preview_session=0, dict_preview=None, dictating=False, mic_level=0, current=None,
@@ -218,7 +218,7 @@ class VisibilityTests(unittest.TestCase):
     def test_delivery_modes_stage_or_draft_without_sending(self):
         for mode in ('immediate', 'review', 'composer'):
             e = engine(delivery=mode, cleanup=False, routes=Mock(current=lambda t: True),
-                       notice=queue.Queue(), draft_in_composer=Mock())
+                       notice=queue.Queue(), draft_in_composer=Mock(),clear_sent_composer=Mock(return_value='kept'))
             with patch.object(t3_voice, 'send_message') as send:
                 ticket = Mock(thread='one')
                 e.deliver_text('My words.', ticket, 20, time.perf_counter())
@@ -764,3 +764,121 @@ class NativeDropdownExitTests(unittest.TestCase):
         e.card_watch(100)
         self.assertIsNone(e.card_close_deadline)
         e.set_expanded.assert_not_called()
+
+
+class OrbPlacementStabilityTests(unittest.TestCase):
+    def test_repeated_resizes_use_the_saved_anchor_not_rounded_window_bounds(self):
+        calls=[]
+        e=engine(hwnd=100,size=None,orb_anchor=(701,901),scale=lambda:1.25,
+                 anchor=lambda:(700-len(calls),900-len(calls)))
+        with patch.object(t3_voice.user32,'MonitorFromPoint',return_value=0),patch.object(t3_voice.user32,'GetMonitorInfoW',return_value=0),patch.object(t3_voice.user32,'SetWindowPos',side_effect=lambda *args:calls.append(args)):
+            for i in range(12):e.place(t3_voice.CARD);e.place(t3_voice.COMPACT)
+        self.assertTrue(all(args[3]+args[5]==901 for args in calls))
+        self.assertTrue(all(abs(args[2]+args[4]/2-701)<=.5 for args in calls))
+
+    def test_drag_updates_are_relative_to_one_gesture_origin(self):
+        e=engine(hwnd=100,lock=threading.RLock(),drag_gesture=0,drag_origin=None,scale=lambda:1.5,
+                 anchor=Mock(return_value=(700,900)),place=Mock(),target_size=lambda:t3_voice.COMPACT)
+        self.assertTrue(hasattr(e,'drag_window'),'thresholded drag API missing')
+        e.drag_window(1,10,-5);e.drag_window(1,20,-10)
+        self.assertEqual([(715,892.5),(730,885)],[call.kwargs['anchor'] for call in e.place.call_args_list])
+        e.anchor.assert_called_once()
+
+
+class ComposerCleanupTests(unittest.TestCase):
+    def control(self,text):
+        value=Mock(Current=SimpleNamespace(Value=text))
+        value.SetValue.side_effect=lambda new:setattr(value.Current,'Value',new)
+        doc=Mock(Current=SimpleNamespace(Value='t3code://app/#/local/one'))
+        e=engine(routes=Mock(current=lambda ticket:True))
+        e.composer_control=Mock(return_value=(123,doc,value,Mock(),'local'))
+        return e,doc,value
+
+    def test_matching_copy_removed_and_other_draft_preserved(self):
+        e,doc,value=self.control('My earlier draft\nDictated words.')
+        self.assertTrue(hasattr(e,'clear_sent_composer'),'post-send composer cleanup missing')
+        with patch.object(t3_voice.user32,'GetForegroundWindow',return_value=0):
+            result=e.clear_sent_composer(SimpleNamespace(thread='one'),'Dictated words.','Dictated words.')
+        self.assertEqual('cleared',result);self.assertEqual('My earlier draft\n',value.Current.Value)
+
+    def test_original_paste_can_be_removed_after_editing_the_orb_review(self):
+        e,doc,value=self.control('Original dictated words.')
+        self.assertTrue(hasattr(e,'clear_sent_composer'),'post-send composer cleanup missing')
+        with patch.object(t3_voice.user32,'GetForegroundWindow',return_value=0):
+            result=e.clear_sent_composer(SimpleNamespace(thread='one'),'Corrected dictated words.','Original dictated words.')
+        self.assertEqual('cleared',result);self.assertEqual('',value.Current.Value)
+
+    def test_ambiguous_copies_and_active_editor_are_never_erased(self):
+        for text,foreground in [('Words Words',0),('Words',123),('Unrelated draft',0)]:
+            e,doc,value=self.control(text)
+            self.assertTrue(hasattr(e,'clear_sent_composer'),'post-send composer cleanup missing')
+            with patch.object(t3_voice.user32,'GetForegroundWindow',return_value=foreground):
+                e.clear_sent_composer(SimpleNamespace(thread='one'),'Words','Words')
+            self.assertEqual(text,value.Current.Value);value.SetValue.assert_not_called()
+
+    def test_changed_destination_does_not_erase_anything(self):
+        e,doc,value=self.control('Words');doc.Current.Value='t3code://app/#/local/other'
+        self.assertTrue(hasattr(e,'clear_sent_composer'),'post-send composer cleanup missing')
+        with patch.object(t3_voice.user32,'GetForegroundWindow',return_value=0):
+            e.clear_sent_composer(SimpleNamespace(thread='one'),'Words','Words')
+        self.assertEqual('Words',value.Current.Value);value.SetValue.assert_not_called()
+
+    def test_cleanup_runs_only_after_send_acknowledgement_and_is_nonfatal(self):
+        for send_fails,cleanup_fails in [(False,False),(True,False),(False,True)]:
+            events=[]
+            e=engine(delivery='immediate',cleanup=False,notice=queue.Queue(),routes=Mock(current=lambda t:True))
+            def send(*args):
+                events.append('send')
+                if send_fails:raise RuntimeError('send failed')
+            def clear(*args):
+                events.append('clear')
+                if cleanup_fails:raise RuntimeError('editor unavailable')
+                return 'cleared'
+            e.clear_sent_composer=clear
+            with patch.object(t3_voice,'send_message',side_effect=send):e.deliver_text('Words',SimpleNamespace(thread='one'),0,time.perf_counter())
+            kinds=[e.notice.get_nowait()[0] for _ in range(e.notice.qsize())]
+            self.assertEqual(['send'] if send_fails else ['send','clear'],events)
+            self.assertEqual(send_fails,'send-error' in kinds)
+            self.assertEqual(not send_fails,'sent' in kinds)
+
+
+class ComposerCleanupRaceTests(unittest.TestCase):
+    def test_typing_between_reads_preserves_the_new_draft(self):
+        reads=iter(['Words','Words plus new typing'])
+        class ChangingValue:
+            SetValue=Mock()
+            @property
+            def Current(self):return SimpleNamespace(Value=next(reads))
+        value=ChangingValue();doc=Mock(Current=SimpleNamespace(Value='t3code://app/#/local/one'))
+        e=engine(routes=Mock(current=lambda t:True),composer_control=Mock(return_value=(123,doc,value,Mock(),'local')))
+        with patch.object(t3_voice.user32,'GetForegroundWindow',return_value=0):
+            self.assertEqual('changed',e.clear_sent_composer(SimpleNamespace(thread='one'),'Words','Words'))
+        value.SetValue.assert_not_called()
+
+    def test_approved_send_keeps_original_pasted_text_for_cleanup(self):
+        ticket=SimpleNamespace(thread='one')
+        e=engine(delivery='review',cleanup=False,notice=queue.Queue(),routes=Mock(current=lambda t:True),
+                 review={'ticket':ticket,'sourceText':'Original words'},clear_sent_composer=Mock(return_value='cleared'))
+        with patch.object(t3_voice,'send_message'):
+            e.deliver_text('Edited words',ticket,0,time.perf_counter(),approved=True)
+        e.clear_sent_composer.assert_called_once_with(ticket,'Edited words','Original words')
+
+
+class ComposerAndEdgeRegressionTests(unittest.TestCase):
+    def test_shortened_review_removes_its_original_paste(self):
+        e,doc,value=ComposerCleanupTests().control('Please make it blue')
+        with patch.object(t3_voice.user32,'GetForegroundWindow',return_value=0):
+            self.assertEqual('cleared',e.clear_sent_composer(SimpleNamespace(thread='one'),'make it blue','Please make it blue'))
+        self.assertEqual('',value.Current.Value)
+
+    def test_default_edge_anchor_has_room_before_the_first_toggle(self):
+        calls=[]
+        e=engine(hwnd=100,size=None,orb_anchor=(1800,1000),scale=lambda:1,anchor=lambda:(1800,1000))
+        def monitor(hwnd,info):
+            info._obj.work.left,info._obj.work.top,info._obj.work.right,info._obj.work.bottom=0,0,1920,1080
+            return 1
+        with patch.object(t3_voice.user32,'MonitorFromPoint',return_value=1),patch.object(t3_voice.user32,'GetMonitorInfoW',side_effect=monitor),patch.object(t3_voice.user32,'SetWindowPos',side_effect=lambda *args:calls.append(args)):
+            e.place(t3_voice.COMPACT)
+            for i in range(10):e.place(t3_voice.CARD);e.place(t3_voice.COMPACT)
+        centres=[args[2]+args[4]/2 for args in calls]
+        self.assertLessEqual(max(centres)-min(centres),.5)

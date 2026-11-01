@@ -458,3 +458,27 @@ class DirectSubmissionTests(unittest.TestCase):
     def test_missing_database_fails_closed(self):
         from t3_voice_core import matching_user_submission
         self.assertFalse(matching_user_submission(self.path.parent/'missing.sqlite','chosen','Text',0))
+
+
+class SentDraftRemovalTests(unittest.TestCase):
+    def remove(self,draft,text):
+        from t3_voice_core import remove_sent_draft_text
+        return remove_sent_draft_text(draft,text)
+
+    def test_whole_duplicate_is_cleared(self):
+        self.assertEqual('',self.remove('  Dictated words.  ','Dictated words.'))
+
+    def test_surrounding_typed_text_is_preserved_exactly(self):
+        self.assertEqual('Earlier draft\n\n\nAfterwards',self.remove('Earlier draft\n\nDictated words.\nAfterwards','Dictated words.'))
+
+    def test_whitespace_variations_match_without_changing_surroundings(self):
+        self.assertEqual('Prefix:  suffix',self.remove('Prefix: Dictated\r\nwords. suffix','Dictated words.'))
+
+    def test_ambiguous_or_overlapping_repetitions_are_kept(self):
+        self.assertIsNone(self.remove('yes yes yes','yes yes'))
+        self.assertIsNone(self.remove('Dictated words. Dictated words.','Dictated words.'))
+
+    def test_unrelated_text_and_substrings_inside_words_are_kept(self):
+        self.assertIsNone(self.remove('Different draft','Dictated words.'))
+        self.assertIsNone(self.remove('Yesterday','Yes'))
+        self.assertIsNone(self.remove('Text','  '))

@@ -295,7 +295,7 @@ void main(){
 
   // voice bloom: absent at rest (keeps the deep-space look), glows outward while someone speaks
   float bloom = exp(-max(0.0, r - 1.0) * (5.0 - 1.6*uLevel)) * smoothstep(0.98, 1.04, r);
-  float bloomAlpha = 0.32 * bloom * uLevel;
+  float bloomAlpha = bloom * (0.32*uLevel + 0.16*uThinking);
   col += vec4(mix(uB, uC, 0.4) * bloomAlpha, bloomAlpha);
 
   // busy ring
@@ -334,7 +334,7 @@ void main(){
     vec3 body = mix(uA * 0.22, uB * 0.62, band);                                   // dark nebula base
     body += mix(uB, uC, 0.5) * smoothstep(0.30, 0.80, f2 + 0.45*uLevel) * (0.2 + 0.5*uLevel);  // filaments flare with voice, coloured not white
     float core = smoothstep(0.0, 0.9, r);                                          // the centre falls into shadow
-    body *= mix(0.25 + 0.75*uLevel, 1.0, core);                                    // the core lights up as you speak
+    body *= mix(min(1.0,0.25 + 0.75*uLevel + 0.35*uThinking), 1.0, core);                                    // the core lights up as you speak
     vec3 L = normalize(vec3(-0.55, 0.75, 0.6));
     float fres = pow(1.0 - max(0.0, n.z), 2.2);
     vec3 H = normalize(L + vec3(0.0, 0.0, 1.0));
@@ -345,7 +345,7 @@ void main(){
     vec3 c = body + mix(uB, uC, 0.4) * fres * (0.65 + 0.45*uLevel + 1.1*rimBand) + mix(vec3(1.0), uC, 0.6) * spec;
     // A stable thread rim is independent of functional state colour.
     c += uThread * pow(r,18.0) * (0.23 + 0.25*uContrast);
-    c += mix(uB,uC,0.25)*uThinking*(0.045+0.025*band);
+    c += mix(uB,uC,0.25)*uThinking*(0.12+0.07*band);
     // Sparse stars stay inside the dark core; reduced motion freezes their time.
     vec2 grid = floor(d*28.0);
     vec2 star = fract(hash3(vec3(grid,7.0)).xy*17.0)*0.7+0.15;
@@ -369,7 +369,7 @@ void main(){
 
 <script>
 const PAL = {
-  thinking:{a:[.08,.12,.34],b:[.32,.43,.88],c:[.70,.80,1.0],glow:.65},
+  thinking:{a:[.015,.20,.48],b:[.12,.64,1.0],c:[.58,.90,1.0],glow:.95},
   approval:{a:[.30,.16,.03],b:[.90,.52,.12],c:[1.0,.79,.37],glow:.85},
   input:{a:[.19,.13,.36],b:[.61,.44,.85],c:[.88,.78,1.0],glow:.65},
   loading:{a:[.20,.21,.26], b:[.42,.44,.52], c:[.72,.74,.80], glow:.25},
@@ -905,13 +905,45 @@ document.getElementById('delivery').addEventListener('blur', ()=>{choosingDelive
 // inside WebView2 fire spurious mouseleave events, so the page never closes it on its own here.
 function dismissAfterLeave(){ setHover(false); }
 document.body.addEventListener('mouseleave', dismissAfterLeave);
-let dragStart=null;
-cv.addEventListener('pointerdown',e=>{dragStart=[e.screenX,e.screenY];});
-cv.addEventListener('pointercancel',()=>{dragStart=null;});
+let dragStart=null, gesturePointer=null, gestureId=0, draggingOrb=false, suppressOrbClick=false;
+let pendingDrag=null, writingDrag=false;
+async function pumpOrbDrag(){
+  if(writingDrag)return;
+  writingDrag=true;
+  try{while(pendingDrag){const move=pendingDrag;pendingDrag=null;await api('drag_window',move.id,move.dx,move.dy);}}
+  catch(e){pendingDrag=null;}
+  finally{writingDrag=false;}
+}
+function beginOrbGesture(e){
+  if(e.button!==0)return;
+  e.stopPropagation();
+  gesturePointer=e.pointerId;dragStart=[e.screenX,e.screenY];draggingOrb=false;suppressOrbClick=false;
+  gestureId=Math.max(gestureId+1,Date.now()*1000);
+  e.currentTarget.setPointerCapture?.(e.pointerId);
+}
+function moveOrbGesture(e){
+  if(e.pointerId!==gesturePointer||!dragStart)return;
+  const dx=e.screenX-dragStart[0],dy=e.screenY-dragStart[1];
+  if(!draggingOrb&&Math.hypot(dx,dy)<6)return;
+  draggingOrb=true;suppressOrbClick=true;
+  pendingDrag={id:gestureId,dx,dy};pumpOrbDrag();
+}
+function endOrbGesture(e){
+  if(e.pointerId!==gesturePointer)return;
+  if(draggingOrb)moveOrbGesture(e);
+  gesturePointer=null;dragStart=null;draggingOrb=false;
+}
+for(const surface of [cv,wave]){
+  surface.addEventListener('pointerdown',beginOrbGesture);
+  surface.addEventListener('pointermove',moveOrbGesture);
+  surface.addEventListener('pointerup',endOrbGesture);
+  surface.addEventListener('pointercancel',()=>{gesturePointer=null;dragStart=null;draggingOrb=false;suppressOrbClick=true;});
+}
 function handleOrbClick(e){
-  e.stopPropagation(); // The canvas is nested in the toolbar button while docked.
-  const moved=dragStart&&Math.hypot(e.screenX-dragStart[0],e.screenY-dragStart[1])>5;
-  dragStart=null;if(!moved)toggleSettings();
+  e.stopPropagation();
+  if(suppressOrbClick&&e.detail!==0){suppressOrbClick=false;return;}
+  suppressOrbClick=false;
+  dragStart=null;toggleSettings();
 }
 cv.addEventListener('click',handleOrbClick);
 function toggleDock(){ S.dock = !S.dock; setExpanded(false); setHover(false); layout(!!S.dock); api('toggle_dock'); }

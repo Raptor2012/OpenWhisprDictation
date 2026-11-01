@@ -425,6 +425,21 @@ def run():
         window.evaluate_js('api=qaSavedResizeApi;')
         report['resizeRace']=resizeRace
         if not all(resizeRace.values()):report['failures'].append({'resizeRace':resizeRace})
+        gestures=window.evaluate_js("""(()=>{
+          if(typeof beginOrbGesture!=='function')return {supported:false};
+          window.qaGestureApi=api;window.qaGestureCalls=[];
+          api=(name,...args)=>{qaGestureCalls.push({name,args});return Promise.resolve();};
+          const event=(x,y)=>({button:0,pointerId:7,screenX:x,screenY:y,currentTarget:{setPointerCapture:()=>{}},stopPropagation:()=>{}});
+          beginOrbGesture(event(100,100));moveOrbGesture(event(103,102));endOrbGesture(event(103,102));
+          const tapDoesNotMove=!qaGestureCalls.some(c=>c.name==='drag_window');
+          beginOrbGesture(event(100,100));moveOrbGesture(event(112,108));endOrbGesture(event(112,108));
+          const before=wantExpanded;handleOrbClick(event(112,108));
+          const dragDoesNotToggle=wantExpanded===before;
+          api=qaGestureApi;
+          return {supported:true,tapDoesNotMove,dragDoesNotToggle};
+        })()""")
+        report['dragGestures']=gestures
+        if not all(gestures.values()):report['failures'].append({'dragGestures':gestures})
         # An old poll must not undo a just-clicked appearance preference.
         appearanceRace=window.evaluate_js("""(()=>{
           const savedApi=api;api=()=>new Promise(()=>{});
@@ -479,6 +494,14 @@ def run():
         time.sleep(.6)
         capture('orb-thinking-trail')
         shader = window.evaluate_js("({thinking:gl.getUniform(prog,U.uThinking),trail:gl.getUniform(prog,U.uBusy),particles:[...pctx.getImageData(0,0,parts.width,parts.height).data].filter((v,i)=>i%4===3&&v>35).length,linked:gl.getProgramParameter(prog,gl.LINK_STATUS),error:gl.getError()})")
+        glow=window.evaluate_js("""(()=>{
+          const blue=gl.getUniform(prog,U.uB),center=gl.getUniform(prog,U.uCenter),radius=gl.getUniform(prog,U.uR),pixel=new Uint8Array(4);
+          gl.drawArrays(gl.TRIANGLE_STRIP,0,4);
+          gl.readPixels(Math.floor(center[0]+radius*1.12),Math.floor(center[1]),1,1,gl.RGBA,gl.UNSIGNED_BYTE,pixel);
+          return {blue:blue[2]>.9&&blue[1]>.5&&blue[0]<.3,halo:pixel[3]>10};
+        })()""")
+        report['thinkingBlueGlow']=glow
+        if not all(glow.values()):report['failures'].append({'thinkingBlueGlow':glow})
         window.evaluate_js("S.agent={activity:'approval',approval:true};render();")
         time.sleep(.5)
         capture('orb-approval-glow')
@@ -550,6 +573,29 @@ def run():
             edge_deviation=max(abs(channel-230) for x in (0,pixels.width-1) for y in range(pixels.height) for channel in pixels.getpixel((x,y)))
         report['windowShadow']={'edgeDeviation':edge_deviation}
         if edge_deviation>1:report['failures'].append({'windowShadow':report['windowShadow']})
+        # Exercise the real native placement code on this isolated QA window, without input.
+        from t3_voice import Engine,MONITORINFO,CARD,COMPACT
+        native=Engine.__new__(Engine)
+        native.hwnd=window.native.Handle.ToInt32();native.size=None;native.orb_anchor=None
+        area=MONITORINFO();area.size=ctypes.sizeof(area)
+        user32.MonitorFromWindow.argtypes=[ctypes.wintypes.HWND,ctypes.c_uint]
+        user32.MonitorFromWindow.restype=ctypes.wintypes.HMONITOR
+        user32.GetMonitorInfoW.argtypes=[ctypes.wintypes.HMONITOR,ctypes.POINTER(MONITORINFO)]
+        monitor=user32.MonitorFromWindow(native.hwnd,2)
+        if not user32.GetMonitorInfoW(monitor,ctypes.byref(area)):raise RuntimeError('Monitor work area unavailable')
+        scale=native.scale()
+        native.place(COMPACT,anchor=(area.work.right-round(120*scale),area.work.bottom-8))
+        positions=[]
+        for i in range(20):
+            for size in (CARD,COMPACT):
+                native.place(size)
+                rect=ctypes.wintypes.RECT();user32.GetWindowRect(native.hwnd,ctypes.byref(rect))
+                positions.append(((rect.left+rect.right)/2,rect.bottom))
+        nativeGeometry={'centreDrift':max(p[0] for p in positions)-min(p[0] for p in positions),
+                        'bottomDrift':max(p[1] for p in positions)-min(p[1] for p in positions),'resizes':len(positions)}
+        report['nativeGeometry']=nativeGeometry
+        if nativeGeometry['centreDrift']>.5 or nativeGeometry['bottomDrift']>0:
+            report['failures'].append({'nativeGeometry':nativeGeometry})
     except Exception as exc:
         report['failures'].append({'error':repr(exc)})
     finally:

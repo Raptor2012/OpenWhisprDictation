@@ -384,6 +384,30 @@ class StreamingFeed(MessageFeed):
         return result
 
 
+def remove_sent_draft_text(draft, sent):
+    """Remove one unambiguous literal copy, preserving every other draft character."""
+    pieces = re.split(r'\s+', sent.strip())
+    if not sent.strip():
+        return None
+    pattern = re.compile(r'(?=(' + r'\s+'.join(re.escape(piece) for piece in pieces) + r'))')
+    matches = []
+    word = lambda c: c.isalnum() or c == '_'
+    for match in pattern.finditer(draft):
+        start,end = match.span(1)
+        if start and word(draft[start-1]) and word(draft[start]):
+            continue
+        if end<len(draft) and word(draft[end-1]) and word(draft[end]):
+            continue
+        matches.append((start,end))
+        if len(matches)>1:
+            return None
+    if not matches:
+        return None
+    start,end = matches[0]
+    result = draft[:start]+draft[end:]
+    return result if result.strip() else ''
+
+
 def matching_user_submission(path, thread, text, since):
     """A recent human submission in the captured thread consumed this dictation. Read only."""
     import sqlite3

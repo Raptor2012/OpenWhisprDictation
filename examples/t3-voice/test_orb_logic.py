@@ -970,3 +970,38 @@ class BackgroundAudioDuckingTests(unittest.TestCase):
         e.update_ducking()
         self.assertTrue(e.ducker.want)
         self.assertEqual((True, 2), (e.meta['ducking'], e.meta['duckedSessions']))
+
+
+
+class MaeveMuteTests(unittest.TestCase):
+    def muted_engine(self):
+        jobs = queue.Queue()
+        current = Message('m1', 'run-1', 'First sentence being spoken.')
+        jobs.put((Message('m2', 'run-1', 'Second sentence.'), 0))
+        e = engine(lock=threading.RLock(), prefs=Mock(), audio=None, cancel=threading.Event(), jobs=jobs,
+                   generation=0, current=current, maeve_muted=False, state='speaking', feed=Mock(),
+                   last_run='run-1', visual_events={'sent': 0, 'interrupt': 0}, synthesis_done_run='',
+                   out_level=0.0, mute_resume=[], cue=Mock(), voice_on=lambda: True)
+        return e
+
+    def test_mute_pauses_without_ending_the_reply_and_unmute_resumes_it(self):
+        e = self.muted_engine()
+        e.toggle_maeve_mute()
+        e.feed.suppress.assert_not_called()
+        e.feed.suppress_current.assert_not_called()
+        self.assertTrue(e.cancel.is_set())
+        self.assertEqual(['m1', 'm2'], [m.id for m in e.mute_resume])
+        e.current = None
+        e.toggle_maeve_mute()
+        queued = []
+        while not e.jobs.empty():
+            queued.append(e.jobs.get_nowait())
+        self.assertEqual(['m1', 'm2'], [m.id for m, _ in queued])
+        self.assertTrue(all(generation == e.generation for _, generation in queued))
+        self.assertEqual([], e.mute_resume)
+
+    def test_explicit_stop_discards_the_paused_reply(self):
+        e = self.muted_engine()
+        e.toggle_maeve_mute()
+        e._stop_locked()
+        self.assertEqual([], e.mute_resume)

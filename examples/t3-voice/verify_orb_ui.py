@@ -60,7 +60,7 @@ def run():
           document.body.style.background='#202329';''')
         states = ['loading','ready','hearing','transcribing','sending','waiting','speaking','reading','off','error','dictating','processing','done','failed']
         cases = [(state, dock, '') for dock in (False,True) for state in states]
-        cases += [('ready',dock,panel) for dock in (False,True) for panel in ('card','menu','list','bubble','review','failed-review')]
+        cases += [('ready',dock,panel) for dock in (False,True) for panel in ('card','menu','list','bubble','live','processing-preview','review','failed-review')]
         for state, dock, panel in cases:
             width, height = ((200,48) if dock else (180,150))
             if panel in ('card','menu','list'):
@@ -77,14 +77,20 @@ def run():
               document.getElementById('menu').classList.toggle('open',panel==='menu');
               document.getElementById('list').classList.toggle('open',panel==='list');
               if(panel==='bubble')S.bubble={id:Date.now(),who:'you',text:'A longer reply '.repeat(50)};
-              if(panel.includes('review'))S.review={id:Date.now(),text:'Please check the Windows build and fix the cause.',
+              if(panel==='live'||panel==='processing-preview'){
+                S.state=panel==='live'?'dictating':'processing';
+                S.bubble={id:'live-preview',who:'you',live:panel==='live',processing:panel==='processing-preview',
+                  text:'The words I am saying appear above the orb while I hold the button.'};
+              }
+              if(['review','failed-review'].includes(panel))S.review={id:Date.now(),text:'Please check the Windows build and fix the cause.',
                 title:'Selected thread',sending:false,error:panel==='failed-review'?'Temporary failure':''};
               render();
             })()''' % json.dumps([state,dock,panel]))
             time.sleep(.6 if panel else .25)
             ids = (['bar','barOrb','wave','barMic','barMaeve','barExpand'] if dock else ['muteMic','muteMaeve','toBar'])
             ids += {'card':['card','delivery','fQuit'], 'menu':['card','menu'], 'list':['card','list'],
-                    'bubble':['bubble'], 'review':['review','reviewSend'], 'failed-review':['review','reviewSend']}.get(panel,[])
+                    'bubble':['bubble'], 'live':['bubble'], 'processing-preview':['bubble'],
+                    'review':['review','reviewSend'], 'failed-review':['review','reviewSend']}.get(panel,[])
             result = window.evaluate_js('''(()=>{
               const bad=[];for(const id of %s){const r=document.getElementById(id).getBoundingClientRect();
                 if(!r.width||!r.height||r.left<-.5||r.top<-.5||r.right>innerWidth+.5||r.bottom>innerHeight+.5)bad.push({id,rect:r.toJSON()});}
@@ -93,8 +99,22 @@ def run():
             result.update(state=state,dock=dock,panel=panel)
             report['cases'].append(result)
             if result['bad'] or result['errors']:report['failures'].append(result)
-            if panel in ('review','menu') or state=='dictating':
+            if panel in ('review','menu','live','processing-preview') or state=='dictating':
                 capture(('bar' if dock else 'orb')+'-'+(panel or state))
+        preview = window.evaluate_js('''(()=>{
+          S.review=null;S.bubble={id:'revision-test',who:'you',live:true,text:'Open the wrong file'};tickBubble(.1);
+          S.bubble.text='Open the right file';tickBubble(.1);
+          const revised=btext.textContent==='Open the right file';
+          const liveLabel=whoEl.textContent==='You · live';
+          S.bubble={...S.bubble,live:false,processing:true};tickBubble(.1);
+          const processingLabel=whoEl.textContent==='You · transcribing';
+          S.bubble={...S.bubble,processing:false,text:'Final cleaned words.'};tickBubble(.1);
+          return {revised,liveLabel,processingLabel,finalText:btext.textContent,errors:qaErrors.slice()};
+        })()''')
+        report['preview'] = preview
+        if (not all(preview[key] for key in ('revised','liveLabel','processingLabel'))
+                or preview['finalText']!='Final cleaned words.' or preview['errors']):
+            report['failures'].append({'preview':preview})
         window.evaluate_js('''(()=>{
           S.review=null;S.expanded=true;applyExpanded(true);render();
           window.qaOldSnapshot={...S,expanded:true};window.qaOldGeneration=typeof settingsGeneration==='number'?settingsGeneration:0;

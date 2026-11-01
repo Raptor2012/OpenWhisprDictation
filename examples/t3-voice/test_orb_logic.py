@@ -17,13 +17,54 @@ def engine(**fields):
     e = t3_voice.Engine.__new__(t3_voice.Engine)
     defaults = dict(asr_pending=0, panel_extra=False, review=None, delivery='immediate', follow_active=False, active_thread=None, dock=False, dict_state='', expanded=False, hovered=False, pin_until=0.0, pending=None, state='ready', confirmed=False,
                     sent_at=0.0, error_at=0.0, t3_min=False, bubble=None, bubble_until=0.0, bubble_seq=0,
-                    bubble_run=None, silent=deque(), meta={})
+                    bubble_run=None, silent=deque(), meta={}, dict_preview_text='', dict_preview_until=0,
+                    dict_preview_session=0, dict_preview=None)
     defaults.update(fields)
     e.__dict__.update(defaults)
     return e
 
 
 class VisibilityTests(unittest.TestCase):
+    def test_preview_never_delivers_and_release_rejects_late_recognition(self):
+        preview=t3_voice.DictationPreview()
+        e=engine(dict_preview=preview,notice=queue.Queue(),dispatch=Mock(),dict_state='dictating')
+        session=preview.start()
+        preview.push(b'a'*32000)
+        request=preview.request(0)
+        with patch.object(t3_voice,'transcribe',return_value='Words still being spoken'), patch.object(t3_voice,'send_message') as send:
+            e.preview_audio(*request)
+            kind,value=e.notice.get_nowait()
+            self.assertEqual('dict-preview',kind)
+            e.accept_dictation_preview(*value)
+            self.assertEqual('Words still being spoken',e.dict_preview_text)
+            preview.push(b'b'*32000)
+            preview.request(2)
+            preview.stop()
+            e.accept_dictation_preview(session,'Late words after release',10,'')
+            self.assertEqual('Words still being spoken',e.dict_preview_text)
+            send.assert_not_called()
+            e.dispatch.assert_not_called()
+
+    def test_live_user_bubble_is_visible_with_t3_open_and_in_toolbar(self):
+        for dock in (False,True):
+            e = engine(dict_state='dictating',dict_preview_text='These are my words',dock=dock)
+            bubble = e.dictation_bubble(time.monotonic())
+            self.assertEqual('These are my words',bubble['text'])
+            self.assertEqual(('you',True),(bubble['who'],bubble['live']))
+            self.assertEqual(t3_voice.BAR_BUBBLE if dock else t3_voice.BUBBLE,e.target_size())
+            e.expanded=True
+            self.assertIsNone(e.dictation_bubble(time.monotonic()))
+            e.expanded=False;e.review={'id':1}
+            self.assertIsNone(e.dictation_bubble(time.monotonic()))
+
+    def test_final_user_text_lingers_then_expires_without_t3_minimized(self):
+        now=time.monotonic()
+        e=engine(dict_preview_text='Final words',dict_preview_until=now+3)
+        self.assertTrue(e.wants_visible(now))
+        self.assertEqual('Final words',e.dictation_bubble(now)['text'])
+        self.assertIsNone(e.dictation_bubble(now+4))
+        self.assertFalse(e.wants_visible(now+4))
+
     def test_more_dictation_does_not_replace_an_editable_review(self):
         e = engine(review={'id':1,'text':'My edited draft'},openwhispr=Mock(poll=lambda:['more dictated words']),
                    routes=Mock(),stop=Mock(),mic_muted=False)
@@ -46,7 +87,7 @@ class VisibilityTests(unittest.TestCase):
             stream.return_value.abort.assert_called_once()
             stream.return_value.close.assert_called_once()
 
-    def test_microphone_is_only_a_level_monitor_even_if_legacy_listening_flag_is_set(self):
+    def test_microphone_never_endpoints_or_delivers_even_if_legacy_listening_flag_is_set(self):
         for dictating in (False, True):
             gate = Mock()
             e = engine(listening=True, dictating=dictating, dict_quiet_until=0, gate=gate, vad=Mock(), notice=Mock())
@@ -260,6 +301,9 @@ class VisibilityTests(unittest.TestCase):
             e.dictation_tick()
             self.assertEqual(expected, e.dict_state)
             self.assertGreater(e.dict_until, time.monotonic())
+            if status == 'completed':
+                self.assertEqual(text,e.dict_preview_text)
+                self.assertGreater(e.dict_preview_until,time.monotonic())
 
     def test_dictation_suppresses_handsfree_capture_and_cooldown(self):
         for dictating, quiet_until in [(True, 0), (False, time.monotonic() + 1)]:

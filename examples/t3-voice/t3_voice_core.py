@@ -14,6 +14,66 @@ from urllib.parse import urlsplit, unquote
 from live_reader_core import MessageFeed, Message, clean_prose
 
 
+class DictationPreview:
+    """Bounded, display-only audio snapshots. Release never waits for a preview job."""
+    def __init__(self, sample_rate=16000, interval=1.1, window_seconds=6, min_seconds=.65):
+        self.lock = threading.Lock()
+        self.limit = int(sample_rate * window_seconds) * 2
+        self.minimum = int(sample_rate * min_seconds) * 2
+        self.voice_minimum = max(2, int(sample_rate * .1) * 2)
+        self.interval = interval
+        self.session = 0
+        self.active = False
+        self.inflight = None
+        self.audio = bytearray()
+        self.new_voice = 0
+        self.last_request = float('-inf')
+
+    def start(self):
+        with self.lock:
+            self.session += 1
+            self.active = True
+            self.audio.clear()
+            self.new_voice = 0
+            self.last_request = float('-inf')
+            return self.session
+
+    def stop(self):
+        with self.lock:
+            self.active = False
+            self.audio.clear()
+            self.new_voice = 0
+
+    def push(self, pcm, voiced=True):
+        with self.lock:
+            if not self.active:
+                return
+            self.audio.extend(pcm)
+            if len(self.audio) > self.limit:
+                del self.audio[:-self.limit]
+            if voiced:
+                self.new_voice += len(pcm)
+
+    def request(self, now):
+        with self.lock:
+            if (not self.active or self.inflight is not None or len(self.audio) < self.minimum
+                    or self.new_voice < self.voice_minimum or now < self.last_request + self.interval):
+                return None
+            self.inflight = self.session
+            self.last_request = now
+            self.new_voice = 0
+            return self.session, bytes(self.audio)
+
+    def complete(self, session, text):
+        with self.lock:
+            if self.inflight != session:
+                return None
+            self.inflight = None
+            if self.active and session == self.session and text.strip():
+                return text.strip()
+            return None
+
+
 def parse_thread_url(url, environment):
     """Exact local T3 desktop route; decode each path component once, as the router does."""
     try:
@@ -388,13 +448,13 @@ def cleanup_text(text, port=8221, timeout=6):
         return text
 
 
-def transcribe(pcm, sample_rate=16000):
+def transcribe(pcm, sample_rate=16000, timeout=25):
     """Existing sherpa offline WebSocket protocol; all audio remains on loopback."""
     import numpy as np
     import websocket
     samples = (np.frombuffer(pcm, dtype='<i2').astype('<f4') / 32768).tobytes()
     payload = struct.pack('<II', sample_rate, len(samples)) + samples
-    socket = websocket.create_connection('ws://127.0.0.1:6006', timeout=25,
+    socket = websocket.create_connection('ws://127.0.0.1:6006', timeout=timeout,
                                          http_no_proxy=['127.0.0.1', 'localhost'])
     try:
         for offset in range(0, len(payload), 10240):

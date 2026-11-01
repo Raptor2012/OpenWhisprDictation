@@ -30,7 +30,7 @@ import webview
 from diagnostics import write_status
 from live_reader import ContinuousAudio
 from live_reader_core import Message
-from t3_voice_core import (DictationWatch, OpenWhisprFeed, Routes, StreamingFeed, UtteranceGate, cleanup_text,
+from t3_voice_core import (DictationPreview, DictationWatch, OpenWhisprFeed, Routes, StreamingFeed, UtteranceGate, cleanup_text,
                            list_threads, parse_hotkey, parse_thread_url, read_env, send_message, transcribe)
 
 ROOT = Path(__file__).resolve().parent
@@ -232,6 +232,10 @@ class Engine:
         self.dict_until = 0.0
         self.dict_quiet_until = 0.0
         self.dict_watch = DictationWatch()
+        self.dict_preview = DictationPreview()
+        self.dict_preview_session = 0
+        self.dict_preview_text = ''
+        self.dict_preview_until = 0.0
         self.listening = False
         self.follow_active = bool(self.prefs.get('followActive', True))
         self.active_thread = None
@@ -416,7 +420,7 @@ class Engine:
     def snapshot(self):
         title = next((t['title'] for t in self.threads if t['id'] == self.thread), '')
         if self.mode == 'openwhispr' and not self.openwhispr.available():
-            hint = 'OpenWhispr history not found. Use hands-free.'
+            hint = 'OpenWhispr history not found. Start OpenWhispr Dictation.'
         elif self.mode == 'openwhispr':
             hint = "OpenWhispr's hotkey dictates into this thread. Keep T3's composer unfocused."
         else:
@@ -444,7 +448,7 @@ class Engine:
                 'expanded': self.expanded,
                 'delivery': self.delivery,
                 'review': {key: self.review.get(key) for key in ('id', 'text', 'title', 'sending', 'error')} if self.review else None,
-                'bubble': self.bubble if show_bubble else None}
+                'bubble': self.dictation_bubble(time.monotonic()) or (self.bubble if show_bubble else None)}
 
     # ----- routing -----
     def select(self, thread, automatic=False):
@@ -595,7 +599,27 @@ class Engine:
             return
         samples = np.frombuffer(frame, dtype='<i2').astype('f4') / 32768
         self.mic_level = float(np.sqrt(np.mean(samples * samples)))
-        # Meter only. OpenWhispr owns the held recording and supplies the final history row.
+        # Display-only preview; OpenWhispr still supplies the only deliverable transcript.
+        if self.dict_preview:
+            self.dict_preview.push(frame, voiced=self.mic_level > .004)
+
+    def preview_audio(self, session, audio):
+        started = time.perf_counter()
+        text, error = '', ''
+        try:
+            text = transcribe(audio, RATE, timeout=1.5)
+        except Exception as exc:
+            error = type(exc).__name__
+        self.notice.put(('dict-preview', (session, text, (time.perf_counter()-started)*1000, error)))
+
+    def accept_dictation_preview(self, session, text, elapsed, error):
+        accepted = self.dict_preview.complete(session, text)
+        if accepted and not self.review:
+            self.dict_preview_text = accepted[-1200:]
+            self.meta['lastPreviewMs'] = elapsed
+            self.meta.pop('previewError', None)
+        if error:
+            self.meta['previewError'] = error
 
     def deliver_audio(self, audio, ticket):
         started = time.perf_counter()
@@ -851,13 +875,20 @@ class Engine:
                     self.pending = None
                     self.dictating = True
                     self.dict_state = 'dictating'
+                    self.dict_preview_text = ''
+                    self.dict_preview_until = 0.0
+                    if not self.review:
+                        self.dict_preview_session = self.dict_preview.start()
                     self.update_mic()
+                elif kind == 'dict-preview':
+                    self.accept_dictation_preview(*value)
                 elif kind == 'dict-stop':
                     if self.dictating:
                         self.dictating = False
                         self.dict_state = 'processing'
                         self.dict_until = time.monotonic() + 12.0
                         self.dict_quiet_until = time.monotonic() + 0.6
+                        self.dict_preview.stop()  # don't await preview ASR or add release latency
                         self.update_mic()
                 elif kind == 'hotkey':
                     if self.review:
@@ -968,6 +999,10 @@ class Engine:
 
     def dictation_tick(self):
         now = time.monotonic()
+        if self.dict_preview:
+            request = self.dict_preview.request(now)
+            if request:
+                threading.Thread(target=self.preview_audio, args=request, daemon=True).start()
         if now >= self.env_read_at:
             self.read_openwhispr_settings()
         self.manage_pill()
@@ -980,16 +1015,31 @@ class Engine:
             last = rows[-1]
             if last['status'] == 'completed' and last['text']:
                 self.dict_state, self.dict_until = 'done', now + 0.9
+                self.dict_preview_text = last['text'][-1200:]
+                self.dict_preview_until = now + 3.0
                 self.meta['lastDictationWords'] = len(last['text'].split())
             else:
                 self.dict_state, self.dict_until = 'failed', now + 3.0
+                self.dict_preview_until = 0.0
                 self.dict_error = (last['error'] or 'Dictation failed')[:60]
         elif self.dict_state in ('processing', 'done', 'failed') and now >= self.dict_until:
             self.dict_state = ''
 
     # ----- bubble -----
+    def dictation_bubble(self, now):
+        if self.expanded or self.review:
+            return None
+        live = self.dict_state == 'dictating'
+        processing = self.dict_state == 'processing'
+        if live or processing or (self.dict_preview_text and now < self.dict_preview_until):
+            return {'id': 'dict-%s' % self.dict_preview_session, 'who': 'you', 'live': live,
+                    'processing': processing, 'text': self.dict_preview_text or ('Listening…' if live else 'Transcribing…')}
+        return None
+
     def show_bubble(self, who, text, run, seconds):
         now = time.monotonic()
+        if who == 'maeve':
+            self.dict_preview_until = 0.0  # let the reply take over from the final user transcript
         same = (who == 'maeve' and self.bubble and self.bubble['who'] == 'maeve' and run == self.bubble_run
                 and now < self.bubble_until + LINGER)
         if same:
@@ -1013,13 +1063,14 @@ class Engine:
         if self.expanded:
             base = BAR_CARD if self.dock else CARD
             return (base[0], base[1] + (120 if self.panel_extra else 0))
-        bubble = self.t3_min and self.bubble is not None and time.monotonic() < self.bubble_until
+        now = time.monotonic()
+        bubble = self.dictation_bubble(now) or (self.t3_min and self.bubble is not None and now < self.bubble_until)
         if self.dock:
             return BAR_CARD if self.expanded else BAR_BUBBLE if bubble else BAR
         return CARD if self.expanded else BUBBLE if bubble else COMPACT
 
     def wants_visible(self, now):
-        if self.review or self.dock or self.dict_state or self.expanded or self.hovered or now < self.pin_until or self.pending:
+        if self.review or self.dock or self.dict_state or self.expanded or self.hovered or now < self.pin_until or self.pending or self.dictation_bubble(now):
             return True
         state = self.state
         if state in ('speaking', 'reading', 'transcribing', 'sending'):
@@ -1136,6 +1187,7 @@ class Engine:
 
     def close(self):
         self.quit.set()
+        self.dict_preview.stop()
         for hwnd in self.pill_hwnds:
             if user32.IsWindow(hwnd):
                 set_hidden_region(hwnd, False)

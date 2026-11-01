@@ -393,14 +393,22 @@ function tickBubble(dt){
     bid = B.id; shown = 0; rendered = -1; freshFrom = 0;
     bubbleEl.classList.toggle('you', B.who === 'you');
   }
-  setText(whoEl,B.who === 'you' ? 'You' : (S.maeveMuted ? 'Maeve · muted' : 'Maeve'));
+  setText(whoEl,B.who === 'you' ? (B.live ? 'You · live' : B.processing ? 'You · transcribing' : 'You') : (S.maeveMuted ? 'Maeve · muted' : 'Maeve'));
   const words = B.text.split(/\s+/).filter(Boolean);
   if (words.length < bwords.length) shown = Math.min(shown, words.length);
   bwords = words;
   if (B.who === 'you') shown = words.length;
   else shown = Math.min(words.length, shown + dt * (S.state === 'speaking' || S.state === 'reading' ? 3.0 : 9.0));
   const n = Math.floor(shown);
-  if (n !== rendered) {
+  if (B.who === 'you') {
+    // Partial ASR can revise words without changing the word count.
+    if (btext.textContent !== B.text) {
+      btext.textContent = B.text;
+      btext.classList.toggle('short', btext.scrollHeight <= btext.clientHeight + 2);
+      btext.scrollTop = btext.scrollHeight;
+    }
+    rendered = n;
+  } else if (n !== rendered) {
     btext.textContent = '';
     const old = document.createTextNode(words.slice(0, Math.max(rendered, 0)).join(' '));
     btext.appendChild(old);

@@ -10,6 +10,54 @@ from t3_voice_core import DictationWatch, McpSender, OpenWhisprFeed, parse_hotke
 from t3_voice_core import parse_thread_url
 
 
+class DictationPreviewTests(unittest.TestCase):
+    def preview(self, **kwargs):
+        from t3_voice_core import DictationPreview
+        return DictationPreview(sample_rate=10, interval=.5, window_seconds=2, min_seconds=.2, **kwargs)
+
+    def test_only_held_speech_requests_preview_and_only_one_request_runs(self):
+        preview = self.preview()
+        preview.push(b'1234', voiced=True)
+        self.assertIsNone(preview.request(0))
+        session = preview.start()
+        preview.push(b'0000', voiced=False)
+        self.assertIsNone(preview.request(0))
+        preview.push(b'1234', voiced=True)
+        self.assertEqual((session,b'00001234'), preview.request(0))
+        preview.push(b'5678', voiced=True)
+        self.assertIsNone(preview.request(2))
+        self.assertEqual('hello',preview.complete(session,'hello'))
+        self.assertIsNone(preview.request(.4))
+        self.assertEqual((session,b'000012345678'),preview.request(.5))
+
+    def test_audio_is_bounded_and_release_drops_late_results(self):
+        preview = self.preview()
+        old = preview.start()
+        preview.push(b'a'*60, voiced=True)
+        self.assertEqual((old,b'a'*40),preview.request(0))
+        preview.stop()
+        preview.push(b'x'*60, voiced=True)
+        self.assertIsNone(preview.request(1))
+        new = preview.start()
+        preview.push(b'b'*8, voiced=True)
+        self.assertIsNone(preview.request(1))
+        self.assertIsNone(preview.complete(old,'late old words'))
+        self.assertEqual((new,b'b'*8),preview.request(1))
+        self.assertIsNone(preview.complete(old,'duplicate old result'))
+        self.assertEqual('new words',preview.complete(new,'new words'))
+
+    def test_empty_result_releases_worker_and_silence_does_not_repeat_inference(self):
+        preview = self.preview()
+        session = preview.start()
+        preview.push(b'a'*8, voiced=True)
+        preview.request(0)
+        self.assertIsNone(preview.complete(session,''))
+        preview.push(b'0'*8, voiced=False)
+        self.assertIsNone(preview.request(2))
+        preview.push(b'b'*8, voiced=True)
+        self.assertIsNotNone(preview.request(2))
+
+
 class ActiveThreadTests(unittest.TestCase):
     def test_exact_local_route_and_once_encoded_thread_id(self):
         self.assertEqual('abc', parse_thread_url('t3code://app/#/local/abc', 'local'))

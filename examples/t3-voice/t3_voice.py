@@ -718,8 +718,8 @@ class Engine:
             self.meta['openwhisprError'] = type(exc).__name__
             return
         for text in texts:
-            if self.review:
-                continue  # OpenWhispr can paste into the focused editor; never replace its draft.
+            if self.review and self.review.get('sending'):
+                continue  # the draft is already on its way; this text is not for it
             ticket = self.routes.ticket()
             if ticket is None or self.mic_muted:
                 continue
@@ -911,6 +911,9 @@ class Engine:
                 elif kind == 'dict-start':
                     if self.current or not self.jobs.empty():
                         self.stop()  # Maeve must not talk into the dictation
+                    if self.review and not self.review.get('sending'):
+                        self.review = None          # newer dictation replaces an unsent draft
+                        self.set_review_focus(False)
                     self.pending = None
                     self.dictating = True
                     self.mic_peak = 0.0
@@ -1077,7 +1080,7 @@ class Engine:
         return bool(bubble and bubble.get('who') == 'maeve' and current and current.run == self.bubble_run)
 
     def reply_bubble_visible(self, now):
-        return bool(self.t3_min and not self.expanded and not self.review and self.bubble
+        return bool(not self.expanded and not self.review and self.bubble
                     and (now < self.bubble_until or self.reply_playing()))
 
     def dictation_bubble(self, now):
@@ -1122,7 +1125,7 @@ class Engine:
         bubble = (self.dictation_bubble(now) or self.reply_bubble_visible(now)
                   or now < self.bubble_layout_until
                   or (self.dict_preview_text and now < self.dict_preview_until + BUBBLE_FADE)
-                  or (self.t3_min and self.bubble is not None and now < self.bubble_until + BUBBLE_FADE))
+                  or (self.bubble is not None and now < self.bubble_until + BUBBLE_FADE))
         if self.dock:
             return BAR_CARD if self.expanded else BAR_BUBBLE if bubble else BAR
         return CARD if self.expanded else BUBBLE if bubble else COMPACT
@@ -1249,8 +1252,11 @@ class Engine:
         self.hovered = hovered
 
     def set_expanded(self, expanded):
-        if self.hwnd is None or self.review or expanded == self.expanded:
+        if self.hwnd is None or expanded == self.expanded:
             return
+        if expanded and self.review and not self.review.get('sending'):
+            self.review = None              # the settings card replaces an unsent draft
+            self.set_state(self.idle_state())
         self.expanded = expanded
         self.expanded_at = time.monotonic()
         self.card_focused = False

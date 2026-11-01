@@ -66,7 +66,7 @@ The follow, pin and delivery preferences survive restarts. Settings grow upward 
 | `live_reader_core.py` | Read-only SQLite feed of T3 messages and Markdown-to-prose cleaning |
 | `live_reader.py` | Earlier reader; the panel reuses its persistent audio device |
 | `pair_t3.py` | Mints the MCP token through T3's pairing-code OAuth flow |
-| `test_*.py` | `python -m unittest test_orb_logic test_t3_voice_core test_live_reader -q` runs 80 tests, including frequency-specific microphone/playback feedback, quiet-audio sensitivity, bubble completion/fade timing, bounded hold-only previews, stale-result rejection, held-recording completion races, meter peak retention, both overlay variants, work-area clamping, review failure/retry and routing; no audio needed |
+| `test_*.py` | `python -m unittest test_orb_logic test_t3_voice_core test_live_reader -q` runs 81 tests, including frequency-specific microphone/playback feedback, quiet-audio sensitivity, bubble completion/fade timing, bounded hold-only previews, stale-result rejection, held-recording completion races, meter peak retention, both overlay variants, work-area clamping, review failure/retry and routing; no audio needed |
 | `verify_orb_ui.py` | Optional WebView2 verification: `python verify_orb_ui.py` checks 46 state/layout combinations, the transcribing placeholder, frequency-band response with quiet PCM fixtures, unmasked text, a monotonic completion fade, live word revisions, dismissal races and control callbacks in an isolated demo. It never opens the mic, simulates input or sends to T3. Evidence is written beneath `runtime/orb-ui-qa/`. |
 
 `t3-voice-token.txt`, settings, status and logs are git-ignored. The status file holds timings and counters only, never conversation text.
@@ -93,7 +93,7 @@ Set `LOCAL_CLEANUP_MODEL=qwen3.5-2b-q4_k_m` in `%APPDATA%\OpenWhisprDictation\.e
 
 ## Voice effect
 
-Options → **FRIDAY voice effect** (on by default) gives Maeve a light two-voice chorus, a faint ring-modulated sheen and a short dark room reverb (`VoiceFx` in `t3_voice_core.py`). It runs per streamed chunk in about 1 ms per 100 ms of audio and adds no buffering, so first-word latency is unchanged. The reverb tail carries across sentences of a reply and is released in 50 ms slices only while nothing new is queued, so the next sentence never waits behind it. Interrupting Maeve drops the tail.
+Options → **FRIDAY voice effect** (on by default) makes Maeve sound like an interface voice: a minimum-phase EQ (high-pass, presence and air), a very short modulated comb for a holographic sheen, light chorus, faint ring-mod shimmer, gentle saturation, and a bright 0.75 s plate reverb with 14 ms pre-delay (`VoiceFx` in `t3_voice_core.py`). It costs about 2 ms per 100 ms of audio and adds no delay: an impulse comes out at sample 0.
 
 ## Which thread Maeve speaks for
 

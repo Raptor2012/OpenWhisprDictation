@@ -19,6 +19,15 @@ window = webview.create_window('Orb UI verification', url=str(ROOT/'ui/orb.html'
                                resizable=False, min_size=(100,48))
 report = {'cases': [], 'failures': []}
 
+def mirrored_peak_ok(heights, band):
+    """Mirrored layout: band b is drawn at u = 0.5 -/+ b/20. Pass if a column at either mirror
+    position (+/-1) reaches the tallest height (within one pixel)."""
+    top = max(heights)
+    columns = {min(10, max(0, int((0.5 + sign * band / 20) * 11))) for sign in (-1, 1)}
+    near = [heights[c + k] for c in columns for k in (-1, 0, 1) if 0 <= c + k < len(heights)]
+    return max(heights) - min(heights) >= 3 and max(near) >= top - 1
+
+
 
 def run():
     import ctypes
@@ -56,8 +65,9 @@ def run():
         import numpy as np
         from t3_voice_core import audio_feedback
         feedback=[]
-        for frequency,rate in ((400,16000),(1600,24000)):
-            pcm=(np.sin(2*np.pi*frequency*np.arange(rate//50)/rate)*.003*32767).astype('<i2').tobytes()
+        # A quiet microphone (like the user's) and Maeve's real playback loudness.
+        for frequency,rate,amplitude in ((400,16000,.003),(1600,24000,.08)):
+            pcm=(np.sin(2*np.pi*frequency*np.arange(rate//50)/rate)*amplitude*32767).astype('<i2').tobytes()
             level,bands=audio_feedback(pcm,rate)
             feedback.append({'level':level,'bands':bands,'dominant':int(np.argmax(bands))})
         window.evaluate_js('window.qaMicFeedback=%s;window.qaOutputFeedback=%s;' % tuple(json.dumps(item) for item in feedback))
@@ -181,9 +191,12 @@ def run():
         window.evaluate_js('''window.qaBandHeights=()=>{
           const canvas=document.getElementById('orbWave'),ctx=canvas.getContext('2d');
           return Array.from({length:11},(_,i)=>{
-            const x=Math.floor((i+.5)*canvas.width/11),pixels=ctx.getImageData(x,0,1,canvas.height).data;
-            let top=canvas.height,bottom=-1;for(let y=0;y<canvas.height;y++)if(pixels[y*4+3]>20){top=Math.min(top,y);bottom=Math.max(bottom,y);}
-            return Math.max(0,bottom-top+1);
+            const x0=Math.floor(i*canvas.width/11),x1=Math.floor((i+1)*canvas.width/11);
+            const pixels=ctx.getImageData(x0,0,Math.max(1,x1-x0),canvas.height).data,w=Math.max(1,x1-x0);
+            let best=0;for(let x=0;x<w;x++){let top=canvas.height,bottom=-1;
+              for(let y=0;y<canvas.height;y++)if(pixels[(y*w+x)*4+3]>20){top=Math.min(top,y);bottom=Math.max(bottom,y);}
+              best=Math.max(best,bottom-top+1);}
+            return Math.max(0,best);
           });
         };
         window.qaBandPeaks=()=>new Promise(done=>{let best=new Array(11).fill(0),n=0;
@@ -202,8 +215,7 @@ def run():
         })()''')
         report['audio']=audio
         if (audio['radiusRatio']<1.04 or not audio['waveform'] or audio['voiceWave']<=audio['quietWave']
-                or max(audio['bandHeights'])-min(audio['bandHeights'])<3
-                or audio['bandHeights'][audio['expectedBand']] < max(audio['bandHeights'])-1 or audio['errors']):
+                or not mirrored_peak_ok(audio['bandHeights'], audio['expectedBand']) or audio['errors']):
             report['failures'].append({'audio':audio})
         window.evaluate_js('''S.bubble={id:'motion-capture',who:'you',live:true,text:'Your voice moves the orb. New words rise gently into view.'};tickBubble(.01);''')
         time.sleep(.1)
@@ -236,8 +248,7 @@ def run():
           finishAdvance:qaFinishAdvance,errors:qaErrors.slice()})''')
         report['playback']=playback
         if (not playback['waveform'] or playback['radiusRatio']<1.04 or playback['finishAdvance']>.61
-                or max(playback['bandHeights'])-min(playback['bandHeights'])<3
-                or playback['bandHeights'][playback['expectedBand']] < max(playback['bandHeights'])-1 or playback['errors']):
+                or not mirrored_peak_ok(playback['bandHeights'], playback['expectedBand']) or playback['errors']):
             report['failures'].append({'playback':playback})
         window.evaluate_js('''S.speaking=false;S.state='ready';S.out=0;render();tickBubble(10);S.bubble=null;tickBubble(0);''')
         exit_opacity=[]

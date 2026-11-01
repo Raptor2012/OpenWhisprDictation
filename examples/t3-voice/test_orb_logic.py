@@ -83,11 +83,18 @@ class VisibilityTests(unittest.TestCase):
         self.assertIsNone(e.dictation_bubble(now+4))
         self.assertFalse(e.wants_visible(now+4))
 
-    def test_more_dictation_does_not_replace_an_editable_review(self):
-        e = engine(review={'id':1,'text':'My edited draft'},openwhispr=Mock(poll=lambda:['more dictated words']),
+    def test_new_dictation_replaces_an_unsent_draft(self):
+        e = engine(review={'id':1,'text':'Old draft'},openwhispr=Mock(poll=lambda:['newer words']),
+                   routes=Mock(ticket=lambda: 'ticket'),stop=Mock(),mic_muted=False)
+        with patch.object(t3_voice.threading, 'Thread') as thread:
+            e.forward_openwhispr()
+        thread.assert_called_once()
+        self.assertEqual(('newer words', 'ticket'), thread.call_args.kwargs['args'])
+
+    def test_text_for_a_draft_already_sending_is_not_forwarded(self):
+        e = engine(review={'id':1,'text':'Old draft','sending':True},openwhispr=Mock(poll=lambda:['more']),
                    routes=Mock(),stop=Mock(),mic_muted=False)
         e.forward_openwhispr()
-        self.assertEqual('My edited draft',e.review['text'])
         e.routes.ticket.assert_not_called()
 
     def test_level_monitor_opens_only_while_dictation_button_is_held(self):
@@ -381,23 +388,25 @@ class VisibilityTests(unittest.TestCase):
         self.assertTrue(engine(expanded=True).wants_visible(now))
         self.assertTrue(engine(pin_until=now + 2).wants_visible(now))
 
-    def test_bubble_only_keeps_orb_when_t3_is_minimized(self):
+    def test_reply_bubble_keeps_orb_visible_whether_or_not_t3_is_minimized(self):
         now = time.monotonic()
         bubble = {'id': 1, 'who': 'maeve', 'text': 'Hi.', 'new': 0}
-        self.assertFalse(engine(bubble=bubble, bubble_until=now + 3).wants_visible(now))
+        self.assertTrue(engine(bubble=bubble, bubble_until=now + 3).wants_visible(now))
         self.assertTrue(engine(bubble=bubble, bubble_until=now + 3, t3_min=True).wants_visible(now))
+        self.assertTrue(engine(bubble=bubble, bubble_until=now + 3).reply_bubble_visible(now))
+        self.assertFalse(engine(bubble=bubble, bubble_until=now - 5).wants_visible(now))
 
 
 class BubbleTests(unittest.TestCase):
-    def test_restoring_t3_keeps_native_space_for_the_outgoing_bubble(self):
+    def test_reply_bubble_stays_when_t3_is_restored_then_expires(self):
         e=engine(t3_min=True,t3_scan_at=float('inf'),hwnd=None,
                  bubble={'id':1,'who':'maeve','text':'Last words'},bubble_until=110)
         with patch.object(t3_voice.time,'monotonic',return_value=100):
             e.desktop_tick()
         e.t3_min=False
-        with patch.object(t3_voice.time,'monotonic',return_value=100.1):
-            self.assertEqual(t3_voice.BUBBLE,e.target_size())
         with patch.object(t3_voice.time,'monotonic',return_value=101):
+            self.assertEqual(t3_voice.BUBBLE,e.target_size())
+        with patch.object(t3_voice.time,'monotonic',return_value=130):
             self.assertEqual(t3_voice.COMPACT,e.target_size())
 
     def test_playing_reply_does_not_expire_on_its_estimated_reading_time(self):

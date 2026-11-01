@@ -422,9 +422,11 @@ const muteMic = document.getElementById('muteMic'), muteMaeve = document.getElem
 const barMic = document.getElementById('barMic'), barMaeve = document.getElementById('barMaeve');
 const reviewEl = document.getElementById('review'), reviewText = document.getElementById('reviewText');
 let reviewId = null;
+let settingsGeneration = 0, settingsPending = 0, settingsWrites = Promise.resolve();
 function setText(el,value){if(el.textContent!==value)el.textContent=value;}
 function render(){
-  if (S.expanded !== undefined && expanded !== !!S.expanded) applyExpanded(!!S.expanded);
+  if (S.review) applyExpanded(false);
+  else if (!settingsPending && S.expanded !== undefined && expanded !== !!S.expanded) applyExpanded(!!S.expanded);
   document.body.classList.toggle('reviewing', !!S.review);
   reviewEl.classList.toggle('show', !!S.review);
   if (S.review && S.review.id !== reviewId) {
@@ -477,7 +479,16 @@ function render(){
 }
 const Q = new URLSearchParams(location.search), DEMO = Q.get('demo');
 function api(name, ...args){ if (!DEMO && window.pywebview) return pywebview.api[name](...args); }
-async function poll(){ try { S = await pywebview.api.poll(); render(); } catch(e){} setTimeout(poll, 50); }
+function acceptSnapshot(next, generation, wasPending){
+  // A poll already in flight must not undo a newer click or a write it raced with.
+  if (wasPending || settingsPending || generation !== settingsGeneration) next.expanded = expanded;
+  S = next; render();
+}
+async function poll(){
+  const generation = settingsGeneration, wasPending = settingsPending > 0;
+  try { acceptSnapshot(await pywebview.api.poll(), generation, wasPending); } catch(e){}
+  setTimeout(poll, 50);
+}
 if (DEMO) {
   const seq = ['ready','hearing','transcribing','sending','waiting','speaking','reading','off','error','dictating','processing','done','failed'];
   let i = seq.indexOf(DEMO); if (i < 0) i = 0;
@@ -495,14 +506,21 @@ if (DEMO) {
   window.addEventListener('pywebviewready', poll);
 }
 function applyExpanded(v){ expanded=v; card.classList.toggle('open', v); if(!v){document.getElementById('list').classList.remove('open'); document.getElementById('menu').classList.remove('open');} }
-function setExpanded(v){ if (S.review || expanded===v) return; applyExpanded(v); api('set_expanded', v); }
+function setExpanded(v){
+  if (S.review || expanded===v) return;
+  ++settingsGeneration; ++settingsPending;
+  S.expanded = v; applyExpanded(v);
+  // WebView bridge calls run on separate Python threads. Preserve click order.
+  settingsWrites = settingsWrites.then(()=>api('set_expanded', v)).catch(()=>{}).finally(()=>{--settingsPending;});
+}
 function panelExtra(){ api('set_panel_extra', document.getElementById('list').classList.contains('open')); }
 function setHover(v){ if (hovering===v) return; hovering = v; document.body.classList.toggle('hover', v); api('set_hover', v); render(); }
 document.getElementById('orbwrap').addEventListener('mouseenter', ()=> setHover(true));
 let choosingDelivery=false;
 document.getElementById('delivery').addEventListener('pointerdown', ()=>{choosingDelivery=true;});
 document.getElementById('delivery').addEventListener('blur', ()=>{choosingDelivery=false;});
-document.body.addEventListener('mouseleave', ()=> { setHover(false); setTimeout(()=>{ if(!document.matches(':hover') && !choosingDelivery) setExpanded(false); }, 400); });
+function dismissAfterLeave(){ setHover(false); setTimeout(()=>{ if(!choosingDelivery && !document.documentElement.matches(':hover')) setExpanded(false); }, 400); }
+document.body.addEventListener('mouseleave', dismissAfterLeave);
 let dragStart=null;
 cv.addEventListener('pointerdown',e=>{dragStart=[e.screenX,e.screenY];});
 cv.addEventListener('pointercancel',()=>{dragStart=null;});

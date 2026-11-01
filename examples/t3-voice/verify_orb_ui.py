@@ -95,6 +95,43 @@ def run():
             if result['bad'] or result['errors']:report['failures'].append(result)
             if panel in ('review','menu') or state=='dictating':
                 capture(('bar' if dock else 'orb')+'-'+(panel or state))
+        window.evaluate_js('''(()=>{
+          S.review=null;S.expanded=true;applyExpanded(true);render();
+          window.qaOldSnapshot={...S,expanded:true};window.qaOldGeneration=typeof settingsGeneration==='number'?settingsGeneration:0;
+          const writes=[];api=(name,...args)=>{if(name==='set_expanded')writes.push(args[0]);return Promise.resolve();};
+          setExpanded(false);
+          // An already-running poll can still contain the previous open state.
+          S.expanded=true;render();setHover(false);
+          const staysClosed=!expanded&&!card.classList.contains('open');
+          setExpanded(true);setExpanded(false);S.expanded=true;render();
+          const latestClickWins=!expanded&&!card.classList.contains('open');
+          window.qaTransitions={staysClosed,latestClickWins,writes,errors:qaErrors.slice()};
+        })()''')
+        time.sleep(.05)
+        window.evaluate_js('''(()=>{
+          acceptSnapshot({...qaOldSnapshot},qaOldGeneration,false);
+          qaTransitions.oldPollAfterAckStaysClosed=!expanded;
+          acceptSnapshot({...qaOldSnapshot},settingsGeneration,true);
+          qaTransitions.pollDuringWriteStaysClosed=!expanded;
+          S.expanded=true;applyExpanded(true);
+          window.qaOriginalMatches=document.documentElement.matches;
+          document.documentElement.matches=function(selector){return selector===':hover'?false:qaOriginalMatches.call(this,selector);};
+          choosingDelivery=false;dismissAfterLeave();
+        })()''')
+        time.sleep(.5)
+        window.evaluate_js('''qaTransitions.pointerLeaveCloses=!expanded&&!card.classList.contains('open');
+          document.documentElement.matches=qaOriginalMatches;qaTransitions.errors=qaErrors.slice();''')
+        transitions = window.evaluate_js('qaTransitions')
+        window.evaluate_js('S.expanded=false;render();')
+        report['transitions'] = transitions
+        if (not transitions['staysClosed'] or not transitions['latestClickWins']
+                or transitions['writes'] != [False,True,False,False]
+                or not all(transitions[key] for key in ('oldPollAfterAckStaysClosed','pollDuringWriteStaysClosed','pointerLeaveCloses'))
+                or transitions['errors']):
+            report['failures'].append({'transitions':transitions})
+        window.evaluate_js('''api=(name,...args)=>{qaCalls.push({name,args});
+            if(name==='set_expanded')S.expanded=args[0];
+            if(name==='confirm_review')S.review.sending=true;};''')
         actions = window.evaluate_js('''(()=>{
           S.expanded=false;S.review=null;render();qaCalls=[];
           toggleMicMute();toggleMaeveMute();toggleDock();

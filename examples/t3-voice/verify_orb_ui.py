@@ -146,6 +146,28 @@ def run():
         report['words']=words
         if not all(words[key] for key in ('stablePrefix','animated','revised')) or words['errors']:
             report['failures'].append({'words':words})
+        resize(340,300)
+        window.evaluate_js('''S.review=null;S.expanded=false;applyExpanded(false);S.dock=false;S.state='speaking';render();
+          window.qaLayoutTick=tickBubble;tickBubble=()=>{};
+          S.bubble={id:'stable-word-layout',who:'maeve',text:'These words stay fixed while the next words appear in the speech bubble.'};
+          qaLayoutTick(1);''')
+        time.sleep(.7)
+        window.evaluate_js('''window.qaTextPositions=[];window.qaTextPosition=()=>{
+          qaTextPositions.push({word:btext.querySelector('.word').getBoundingClientRect().top,
+            panel:bubbleEl.getBoundingClientRect().top,scroll:btext.scrollTop});
+          };qaTextPosition();qaLayoutTick(.34);qaTextPosition();''')
+        time.sleep(.15)
+        window.evaluate_js('qaTextPosition();')
+        time.sleep(.4)
+        window.evaluate_js('''qaTextPosition();for(let i=0;i<7;i++){qaLayoutTick(.34);qaTextPosition();}''')
+        time.sleep(.65)
+        layout = window.evaluate_js('''(()=>{qaTextPosition();tickBubble=qaLayoutTick;
+          return {positions:qaTextPositions,errors:qaErrors.slice()};})()''')
+        report['textLayout']=layout
+        if (max(p['word'] for p in layout['positions'])-min(p['word'] for p in layout['positions'])>.75
+                or max(p['panel'] for p in layout['positions'])-min(p['panel'] for p in layout['positions'])>.75
+                or layout['errors']):
+            report['failures'].append({'textLayout':layout})
         window.evaluate_js('''S.review=null;S.expanded=false;applyExpanded(false);S.dock=false;S.state='dictating';S.mic=0;S.micBands=Array(11).fill(0);render();''')
         resize(340,300)
         window.evaluate_js('''window.qaWaveHeight=()=>{

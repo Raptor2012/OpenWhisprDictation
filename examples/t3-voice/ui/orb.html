@@ -45,9 +45,12 @@
                    border-right:1px solid var(--line); border-bottom:1px solid var(--line); transform:rotate(45deg); border-radius:0 0 3px 0; }
   #who { font-size:10px; letter-spacing:.6px; text-transform:uppercase; color:#c4a8ff; margin-bottom:3px; }
   #bubble.you #who { color:#ffcf8a; }
-  #btext { font-size:13px; line-height:1.45; max-height:113px; overflow:hidden; white-space:pre-wrap; overflow-wrap:anywhere; }
+  #bubbleText { position:relative; font-size:13px; line-height:1.45; min-height:1.45em; max-height:113px;
+                overflow:hidden; overflow-anchor:none; white-space:pre-wrap; overflow-wrap:anywhere; }
+  #bmeasure { visibility:hidden; pointer-events:none; }
+  #btext { position:absolute; inset:0; overflow:hidden; overflow-anchor:none; }
   #bubble.you #btext { color:#d9dce3; }
-  #btext .word { display:inline-block; max-width:100%; }
+  #bubbleText .word { display:inline-block; max-width:100%; }
   #btext .fresh { animation:ink .42s var(--soft) both; animation-delay:var(--ink-delay,0ms); }
   @keyframes ink { from { opacity:0; filter:blur(4px); transform:translateY(5px); } to { opacity:1; filter:blur(0); transform:none; } }
   @media (prefers-reduced-motion:reduce) { #btext .fresh { animation:none; } }
@@ -126,7 +129,7 @@
 </head>
 <body>
 <div id="stage">
-  <div id="bubble"><div id="who">Maeve</div><div id="btext"></div></div>
+  <div id="bubble"><div id="who">Maeve</div><div id="bubbleText"><div id="bmeasure" aria-hidden="true"></div><div id="btext"></div></div></div>
   <div id="card">
     <div class="thread" id="threadBtn"><span class="t" id="threadName">Choose a thread</span><span class="chev">▼</span></div>
     <div id="list"></div>
@@ -395,8 +398,21 @@ function drawWave(dt, C){
 
 // ---------- bubble: typewriter reveal at speaking pace ----------
 const bubbleEl = document.getElementById('bubble'), btext = document.getElementById('btext'), whoEl = document.getElementById('who');
+const bubbleText = document.getElementById('bubbleText'), bmeasure = document.getElementById('bmeasure');
 let bid = null, bwords = [], shown = 0, rendered = -1, freshFrom = 0;
 let bubbleNodes = [];
+let measuredBubbleText = null, reservedBubbleHeight = 0;
+function reserveBubbleText(tokens){
+  // The full payload reserves its final layout before individual words appear.
+  const fragment=document.createDocumentFragment();
+  tokens.forEach((token,i)=>{
+    const node=document.createElement('span');node.className='word';node.textContent=token.word;
+    fragment.append(node,document.createTextNode(i<tokens.length-1?token.gap:''));
+  });
+  bmeasure.replaceChildren(fragment);
+  reservedBubbleHeight=Math.max(reservedBubbleHeight,Math.min(113,bmeasure.offsetHeight));
+  bubbleText.style.height=reservedBubbleHeight+'px';
+}
 function paintBubble(tokens){
   // Reuse stable words. A rolling audio window may drop words from the start.
   if(bubbleNodes.length && tokens.length && bubbleNodes[0].word!==tokens[0].word){
@@ -426,7 +442,9 @@ function paintBubble(tokens){
   }
   bubbleNodes.splice(prefix,0,...added);
   bubbleNodes.forEach((item,i)=>{const gap=i<tokens.length-1?tokens[i].gap:'';if(item.gap.textContent!==gap)item.gap.textContent=gap;});
-  btext.scrollTop = btext.scrollHeight;
+  // Layout offsets exclude a new word's animated translateY; scrollHeight does not.
+  const last=bubbleNodes[bubbleNodes.length-1]?.node;
+  btext.scrollTop=last?Math.max(0,last.offsetTop+last.offsetHeight-btext.clientHeight):0;
 }
 function tickBubble(dt){
   const B = S.bubble;
@@ -434,10 +452,12 @@ function tickBubble(dt){
   if (B.id !== bid) {
     bid = B.id; shown = 0; rendered = -1; freshFrom = 0;
     bubbleNodes=[];btext.replaceChildren();
+    measuredBubbleText=null;reservedBubbleHeight=0;
     bubbleEl.classList.toggle('you', B.who === 'you');
   }
   setText(whoEl,B.who === 'you' ? (B.live ? 'You · live' : B.processing ? 'You · transcribing' : 'You') : (S.maeveMuted ? 'Maeve · muted' : 'Maeve'));
   const tokens = [...B.text.matchAll(/(\S+)(\s*)/g)].map(m=>({word:m[1],gap:m[2]}));
+  if(measuredBubbleText!==B.text){reserveBubbleText(tokens);measuredBubbleText=B.text;}
   const words = tokens.map(token=>token.word);
   if (words.length < bwords.length) shown = Math.min(shown, words.length);
   bwords = words;

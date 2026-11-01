@@ -261,7 +261,6 @@ class Engine:
         self.confirmed = False
         self.mic_muted = bool(self.prefs.get('micMuted', False))
         self.maeve_muted = bool(self.prefs.get('maeveMuted', False))
-        self.mute_resume = []   # the interrupted sentence and anything that arrived while Maeve was muted
         self.t3_min = False
         self.t3_hwnd = None
         self.t3_scan_at = 0.0
@@ -682,6 +681,7 @@ class Engine:
             self.stop()
             try:
                 fresh = ContinuousAudio(device=self.device_index('output'))
+                fresh.paused = self.maeve_muted
             except Exception as exc:
                 self.speaker_device = previous
                 self.meta['speakerError'] = type(exc).__name__
@@ -751,20 +751,18 @@ class Engine:
             self.maeve_muted = not self.maeve_muted
             self.prefs.set('maeveMuted', self.maeve_muted)
             if self.maeve_muted:
+                # A true pause: playback freezes on the current sample; nothing is cancelled or skipped.
                 if self.audio:
-                    with self.audio.cv:
-                        self.mute_resume = self._pause_locked()
-                else:
-                    self.mute_resume = self._pause_locked()
+                    self.audio.pause()
                 if self.state == 'speaking':
                     self.set_state(self.idle_state())
             else:
+                if self.audio:
+                    self.audio.resume()            # carries on from exactly where she stopped
                 self.silent.clear()
-                # Resume where she was cut off: the interrupted sentence, then what arrived while muted.
-                for message in self.mute_resume:
-                    self.jobs.put_nowait((message, self.generation))
-                self.mute_resume = []
-                if self.state == 'reading':
+                if self.current is not None:
+                    self.set_state('speaking')
+                elif self.state == 'reading':
                     self.set_state(self.idle_state())
             self.cue([440, 330] if self.maeve_muted else [659, 784], 55)
 
@@ -937,26 +935,7 @@ class Engine:
         else:
             self._stop_locked()
 
-    def _pause_locked(self):
-        """Silence Maeve now but keep the reply: returns the interrupted sentence and the queued ones."""
-        resume = [self.current] if self.current is not None else []
-        while True:
-            try:
-                message, _ = self.jobs.get_nowait()
-            except queue.Empty:
-                break
-            if not resume or message.id != resume[-1].id or message.text != resume[-1].text:
-                resume.append(message)
-        self.synthesis_done_run = ''
-        self.generation += 1
-        self.cancel.set()
-        if self.audio:
-            self.audio.reset()
-        self.out_level = 0.0
-        return resume
-
     def _stop_locked(self):
-        self.mute_resume = []   # an explicit stop ends the reply for good
         self.synthesis_done_run = ''
         if self.current is not None:
             self.visual_events['interrupt'] += 1
@@ -997,6 +976,7 @@ class Engine:
                     pass
             try:
                 self.audio = ContinuousAudio(device=self.device_index('output'))
+                self.audio.paused = self.maeve_muted
             except Exception:
                 self.audio = ContinuousAudio()      # saved speaker unavailable: use the system default
             self.notice.put(('ready', None))
@@ -1269,14 +1249,7 @@ class Engine:
                 self.settled_feed_run = ''
                 for message in messages:
                     self.last_run = message.run
-                    if self.maeve_muted:
-                        if self.t3_min:
-                            self.silent.append(message)
-                        if self.mute_resume and self.mute_resume[-1].run != message.run:
-                            self.mute_resume = []          # only the latest reply is resumed
-                        self.mute_resume = (self.mute_resume + [message])[-64:]
-                        continue
-                    self.jobs.put_nowait((message, self.generation))
+                    self.jobs.put_nowait((message, self.generation))   # waits behind a paused output while muted
                 if self.agent.get('activity') == 'idle':
                     self.settled_feed_run = self.agent.get('run', '')
                 if self.mode == 'openwhispr' and self.openwhispr.available():

@@ -16,7 +16,7 @@ from live_reader_core import Message
 
 def engine(**fields):
     e = t3_voice.Engine.__new__(t3_voice.Engine)
-    defaults = dict(native_placement=None,hit_rects=None,orb_anchor=None,card_close_deadline=None,review_poll_at=0,dictation_started_wall=0,settled_feed_run='',synthesis_done_run='',agent={},visual_events={'sent':0,'interrupt':0},high_contrast=False,reduced_motion=False,choosing_delivery=False, mic_device="", speaker_device="", asr_pending=0, panel_extra=False, review=None, delivery='immediate', follow_active=False, active_thread=None, dock=False, dict_state='', expanded=False, hovered=False, pin_until=0.0, pending=None, state='ready', confirmed=False,
+    defaults = dict(maeve_muted=False,native_placement=None,hit_rects=None,orb_anchor=None,card_close_deadline=None,review_poll_at=0,dictation_started_wall=0,settled_feed_run='',synthesis_done_run='',agent={},visual_events={'sent':0,'interrupt':0},high_contrast=False,reduced_motion=False,choosing_delivery=False, mic_device="", speaker_device="", asr_pending=0, panel_extra=False, review=None, delivery='immediate', follow_active=False, active_thread=None, dock=False, dict_state='', expanded=False, hovered=False, pin_until=0.0, pending=None, state='ready', confirmed=False,
                     sent_at=0.0, error_at=0.0, t3_min=False, bubble=None, bubble_until=0.0, bubble_seq=0,
                     bubble_run=None, silent=deque(), meta={}, dict_preview_text='', dict_preview_until=0,
                     dict_preview_session=0, dict_preview=None, dictating=False, mic_level=0, current=None,
@@ -974,34 +974,39 @@ class BackgroundAudioDuckingTests(unittest.TestCase):
 
 
 class MaeveMuteTests(unittest.TestCase):
-    def muted_engine(self):
-        jobs = queue.Queue()
-        current = Message('m1', 'run-1', 'First sentence being spoken.')
-        jobs.put((Message('m2', 'run-1', 'Second sentence.'), 0))
-        e = engine(lock=threading.RLock(), prefs=Mock(), audio=None, cancel=threading.Event(), jobs=jobs,
-                   generation=0, current=current, maeve_muted=False, state='speaking', feed=Mock(),
-                   last_run='run-1', visual_events={'sent': 0, 'interrupt': 0}, synthesis_done_run='',
-                   out_level=0.0, mute_resume=[], cue=Mock(), voice_on=lambda: True)
-        return e
-
-    def test_mute_pauses_without_ending_the_reply_and_unmute_resumes_it(self):
-        e = self.muted_engine()
+    def test_mute_pauses_output_without_cancelling_and_unmute_resumes(self):
+        jobs = queue.Queue(); jobs.put((Message('m2', 'run-1', 'Second sentence.'), 0))
+        audio = Mock()
+        e = engine(lock=threading.RLock(), prefs=Mock(), audio=audio, cancel=threading.Event(), jobs=jobs,
+                   generation=0, current=Message('m1', 'run-1', 'Being spoken.'), maeve_muted=False,
+                   state='speaking', feed=Mock(), cue=Mock(), voice_on=lambda: True)
         e.toggle_maeve_mute()
+        audio.pause.assert_called_once()
+        audio.reset.assert_not_called()
+        self.assertFalse(e.cancel.is_set())
+        self.assertEqual(0, e.generation)
+        self.assertEqual(1, jobs.qsize())
         e.feed.suppress.assert_not_called()
-        e.feed.suppress_current.assert_not_called()
-        self.assertTrue(e.cancel.is_set())
-        self.assertEqual(['m1', 'm2'], [m.id for m in e.mute_resume])
-        e.current = None
         e.toggle_maeve_mute()
-        queued = []
-        while not e.jobs.empty():
-            queued.append(e.jobs.get_nowait())
-        self.assertEqual(['m1', 'm2'], [m.id for m, _ in queued])
-        self.assertTrue(all(generation == e.generation for _, generation in queued))
-        self.assertEqual([], e.mute_resume)
+        audio.resume.assert_called_once()
+        self.assertEqual('speaking', e.state)
+        self.assertEqual(1, jobs.qsize())
 
-    def test_explicit_stop_discards_the_paused_reply(self):
-        e = self.muted_engine()
-        e.toggle_maeve_mute()
-        e._stop_locked()
-        self.assertEqual([], e.mute_resume)
+
+class PausedOutputTests(unittest.TestCase):
+    def test_paused_callback_plays_silence_and_keeps_its_place(self):
+        from collections import deque as dq
+        from live_reader import ContinuousAudio
+        out = ContinuousAudio.__new__(ContinuousAudio)
+        out.cv = threading.Condition(); out.chunks = dq([(b'\x10\x00' * 480, '')]); out.pending = 960
+        out.callbacks = out.output_underflows = out.played_samples = 0; out.reply_run = ''; out.reply_played = 0
+        out.level = 0.5; out.spectrum = [0.5] * 11; out.paused = True
+        buf = bytearray(960)
+        out.callback(buf, 480, None, SimpleNamespace(output_underflow=False))
+        self.assertEqual(bytes(960), bytes(buf))
+        self.assertEqual(960, out.pending)
+        self.assertEqual(1, len(out.chunks))
+        out.paused = False
+        out.callback(buf, 480, None, SimpleNamespace(output_underflow=False))
+        self.assertEqual(b'\x10\x00' * 480, bytes(buf))
+        self.assertEqual(0, out.pending)

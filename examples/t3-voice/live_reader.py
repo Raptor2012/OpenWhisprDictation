@@ -40,6 +40,7 @@ class ContinuousAudio:
         self.output_underflows = 0
         self.level = 0.0
         self.spectrum = [0.0]*11
+        self.paused = False      # muted: hold every buffered sample in place and play silence
         self.stream = sd.RawOutputStream(samplerate=24000, channels=1, dtype='int16', device=device,
                                          blocksize=480, latency='low', callback=self.callback)
         self.stream.start()
@@ -52,6 +53,11 @@ class ContinuousAudio:
             self.callbacks += 1
             if status.output_underflow:
                 self.output_underflows += 1
+            if self.paused:
+                self.level *= .86
+                self.spectrum = [value*.74 for value in self.spectrum]
+                self.cv.notify_all()
+                return
             while self.chunks and pos < len(target):
                 chunk, reply_run = self.chunks[0]
                 take = min(len(chunk), len(target) - pos)
@@ -82,6 +88,16 @@ class ContinuousAudio:
             self.spectrum = [0.0]*11
             self.cv.notify_all()
             return self.epoch
+
+    def pause(self):
+        with self.cv:
+            self.paused = True
+            self.cv.notify_all()
+
+    def resume(self):
+        with self.cv:
+            self.paused = False
+            self.cv.notify_all()
 
     def begin_reply(self, run):
         with self.cv:

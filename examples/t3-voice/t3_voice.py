@@ -1,4 +1,4 @@
-"""Maeve voice orb for T3 Code: frameless transparent web view, hands-free or OpenWhispr-driven."""
+"""Maeve voice orb for T3 Code: one transparent UI for held OpenWhispr dictation and replies."""
 import argparse
 from collections import deque
 import ctypes
@@ -47,6 +47,13 @@ FADE = 0.5          # seconds for the exit animation before the window is hidden
 user32 = ctypes.WinDLL('user32')
 kernel32 = ctypes.WinDLL('kernel32')
 gdi32 = ctypes.WinDLL('gdi32')
+kernel32.OpenProcess.restype = wintypes.HANDLE
+kernel32.QueryFullProcessImageNameW.argtypes = [wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR, ctypes.POINTER(wintypes.DWORD)]
+kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+gdi32.CreateRectRgn.restype = wintypes.HANDLE
+gdi32.DeleteObject.argtypes = [wintypes.HANDLE]
+user32.GetWindowRgn.argtypes = [wintypes.HWND, wintypes.HANDLE]
+user32.SetWindowRgn.argtypes = [wintypes.HWND, wintypes.HANDLE, wintypes.BOOL]
 user32.SetWindowPos.argtypes = [wintypes.HWND, wintypes.HWND, ctypes.c_int, ctypes.c_int, ctypes.c_int,
                                 ctypes.c_int, ctypes.c_uint]
 user32.MonitorFromPoint.argtypes = [wintypes.POINT, wintypes.DWORD]
@@ -57,16 +64,19 @@ SW_HIDE, SW_SHOWNOACTIVATE = 0, 4
 EnumWindowsProc = ctypes.WINFUNCTYPE(ctypes.c_bool, wintypes.HWND, wintypes.LPARAM)
 
 
-def find_app_window(exe, title=None):
-    """First visible, unowned top-level window of a process whose image ends with `exe`, or None."""
+def find_app_windows(exe, title=None, overlays=False):
+    """Match process identity as well as title; recorder overlays may have owners."""
     found = []
 
     def visit(hwnd, _):
-        if not user32.IsWindowVisible(hwnd) or user32.GetWindow(hwnd, 4) or not user32.GetWindowTextLengthW(hwnd):
+        if (not user32.IsWindowVisible(hwnd) or (not overlays and user32.GetWindow(hwnd, 4))
+                or not user32.GetWindowTextLengthW(hwnd)):
+            return True
+        text = ctypes.create_unicode_buffer(256)
+        user32.GetWindowTextW(hwnd, text, 256)
+        if overlays and not is_dictation_overlay(text.value, user32.GetWindowLongW(hwnd, -16), user32.GetWindowLongW(hwnd, -20)):
             return True
         if title is not None:
-            text = ctypes.create_unicode_buffer(256)
-            user32.GetWindowTextW(hwnd, text, 256)
             if text.value != title:
                 return True
         pid = wintypes.DWORD()
@@ -79,19 +89,28 @@ def find_app_window(exe, title=None):
             kernel32.CloseHandle(handle)
             if ok and path.value.lower().endswith(exe):
                 found.append(hwnd)
-                return False
         return True
 
     user32.EnumWindows(EnumWindowsProc(visit), 0)
-    return found[0] if found else None
+    return found
+
+
+def find_app_window(exe, title=None):
+    windows = find_app_windows(exe, title)
+    return windows[0] if windows else None
 
 
 def find_t3_window():
     return find_app_window('t3 code (beta).exe')
 
 
-def find_openwhispr_pill():
-    return find_app_window('openwhispr dictation.exe', 'Voice Recorder')
+def is_dictation_overlay(title, style, exstyle):
+    return title == 'Voice Recorder' or (title in ('OpenWhispr', 'OpenWhispr Dictation')
+            and not style & 0x00C00000 and bool(exstyle & 0x08000000))
+
+
+def find_openwhispr_pills():
+    return find_app_windows('openwhispr dictation.exe', overlays=True)
 
 
 def set_hidden_region(hwnd, hidden):
@@ -101,9 +120,22 @@ def set_hidden_region(hwnd, hidden):
     kind = user32.GetWindowRgn(hwnd, probe)
     gdi32.DeleteObject(probe)
     if hidden and kind != 1:  # 1 = NULLREGION
-        user32.SetWindowRgn(hwnd, gdi32.CreateRectRgn(0, 0, 0, 0), True)
+        region = gdi32.CreateRectRgn(0, 0, 0, 0)
+        if not user32.SetWindowRgn(hwnd, region, True):
+            gdi32.DeleteObject(region)
     elif not hidden and kind == 1:
         user32.SetWindowRgn(hwnd, None, True)
+
+
+def clamp_anchor(anchor, size, area):
+    cx, bottom = anchor
+    width, height = size
+    left, top, right, edge_bottom = area
+    return max(left + width/2, min(cx, right-width/2)), max(top+height, min(bottom, edge_bottom))
+
+
+class MONITORINFO(ctypes.Structure):
+    _fields_ = [('size', wintypes.DWORD), ('monitor', wintypes.RECT), ('work', wintypes.RECT), ('flags', wintypes.DWORD)]
 
 
 class Prefs:
@@ -160,7 +192,8 @@ class Engine:
         self.mic_level = 0.0
         self.out_level = 0.0
         self.pending = None  # unfinished fragment waiting for its continuation
-        self.mode = self.prefs.get('mode', 'handsfree')
+        self.mode = 'openwhispr'  # hold/release defines turns; never listen continuously
+        self.prefs.set('mode', self.mode)
         self.cleanup = bool(self.prefs.get('cleanup', False))
         self.window = None
         self.hwnd = None
@@ -188,8 +221,8 @@ class Engine:
         self.startup_cached = None
         # OpenWhispr dictation mirrored in the orb
         self.dock = bool(self.prefs.get('dock', False))
-        self.hide_pill = bool(self.prefs.get('hidePill', True))
-        self.pill_hwnd = None
+        self.hide_pill = True
+        self.pill_hwnds = set()
         self.pill_scan_at = 0.0
         self.dict_keys = None
         self.dict_mode = 'push'
@@ -308,20 +341,35 @@ class Engine:
 
     def confirm_review(self, review_id, text):
         with self.lock:
-            if not self.review or self.review['id'] != review_id or not text.strip():
+            if not self.review or self.review['id'] != review_id or self.review.get('sending') or not text.strip():
                 return
-            draft, self.review = self.review, None
-            self.set_review_focus(False)
+            draft = self.review
+            draft.update(text=text.strip(), sending=True, error='')
+            self.review_sending_id = review_id
             self.set_state('sending')
             self.update_mic()
             self.dispatch(text.strip(), draft['ticket'], draft['asr'], draft['started'], approved=True)
 
     def cancel_review(self):
         with self.lock:
+            if self.review and self.review.get('sending'):
+                return
             self.review = None
             self.set_review_focus(False)
             self.set_state(self.idle_state())
             self.update_mic()
+
+    def finish_review(self, error=None):
+        if not self.review or self.review['id'] != getattr(self, 'review_sending_id', None):
+            return
+        self.review_sending_id = None
+        if error:
+            self.review.update(sending=False, error=error)
+            self.set_review_focus(True)
+        else:
+            self.review = None
+            self.set_review_focus(False)
+        self.update_mic()
 
     def draft_in_composer(self, ticket, text):
         """Semantic accessibility edit, never keystrokes or a clipboard paste into an arbitrary app."""
@@ -391,9 +439,11 @@ class Engine:
                 'openwhispr': self.openwhispr.available(), 'visible': self.visible,
                 'micMuted': self.mic_muted, 'maeveMuted': self.maeve_muted, 'dock': self.dock,
                 'hidePill': self.hide_pill, 'dictKey': self.prefs.get('dictKeyLabel', ''),
+                'dictActivation': self.dict_mode,
                 'followActive': self.follow_active,
+                'expanded': self.expanded,
                 'delivery': self.delivery,
-                'review': {key: self.review[key] for key in ('id', 'text', 'title')} if self.review else None,
+                'review': {key: self.review.get(key) for key in ('id', 'text', 'title', 'sending', 'error')} if self.review else None,
                 'bubble': self.bubble if show_bubble else None}
 
     # ----- routing -----
@@ -402,6 +452,8 @@ class Engine:
             had_thread = self.thread is not None
             enabled = bool(self.thread and self.routes.preferences.get(self.thread, False))
             if not automatic:
+                if self.review and self.review.get('sending'):
+                    return
                 if self.review:
                     self.cancel_review()
                 self.follow_active = False
@@ -427,13 +479,6 @@ class Engine:
             self.feed.discard_pending()
             self.after_route_change()
             self.cue([660, 880] if self.voice_on() else [440], 60)
-
-    def toggle_mode(self):
-        with self.lock:
-            self.mode = 'openwhispr' if self.mode == 'handsfree' else 'handsfree'
-            self.prefs.set('mode', self.mode)
-            self.openwhispr.cursor = None
-            self.after_route_change()
 
     def toggle_cleanup(self):
         self.cleanup = not self.cleanup
@@ -479,25 +524,21 @@ class Engine:
             self.dock = not self.dock
             self.prefs.set('dock', self.dock)
             self.expanded = False
+            self.panel_extra = False
             self.show_until = time.monotonic() + LINGER
             if self.hwnd is not None:
                 self.place(self.target_size())
             self.cue([587, 440] if self.dock else [440, 587], 50)
 
-    def toggle_hide_pill(self):
-        with self.lock:
-            self.hide_pill = not self.hide_pill
-            self.prefs.set('hidePill', self.hide_pill)
-            self.manage_pill(force=True)
-
     def manage_pill(self, force=False):
         now = time.monotonic()
-        if force or now >= self.pill_scan_at or (self.pill_hwnd and not user32.IsWindow(self.pill_hwnd)):
-            if not (self.pill_hwnd and user32.IsWindow(self.pill_hwnd)):
-                self.pill_hwnd = find_openwhispr_pill()
-            self.pill_scan_at = now + 2.0
-        if self.pill_hwnd:
-            set_hidden_region(self.pill_hwnd, self.hide_pill and not self.quit.is_set())
+        self.pill_hwnds = {hwnd for hwnd in self.pill_hwnds if user32.IsWindow(hwnd)}
+        if force or now >= self.pill_scan_at:
+            self.pill_hwnds.update(find_openwhispr_pills())
+            self.pill_scan_at = now + .25
+        for hwnd in self.pill_hwnds:
+            set_hidden_region(hwnd, not self.quit.is_set())
+        self.meta['hiddenOverlayCount'] = len(self.pill_hwnds)
 
     def read_openwhispr_settings(self):
         env = read_env(OPENWHISPR_ENV)
@@ -536,11 +577,9 @@ class Engine:
 
     # ----- speech in -----
     def update_mic(self):
-        self.listening = self.ready and self.voice_on() and self.mode == 'handsfree' and not self.mic_muted and not self.review
-        want = self.listening or (self.ready and self.dictating)
+        self.listening = False
+        want = self.ready and self.dictating
         if want and self.mic_stream is None:
-            self.vad = webrtcvad.Vad(3)
-            self.gate = UtteranceGate()  # 40 ms start; 1.2 s quiet preserves natural pauses
             self.mic_stream = sd.RawInputStream(samplerate=RATE, channels=1, dtype='int16',
                                                 blocksize=FRAME, latency='low', callback=self.mic_callback)
             self.mic_stream.start()
@@ -556,29 +595,7 @@ class Engine:
             return
         samples = np.frombuffer(frame, dtype='<i2').astype('f4') / 32768
         self.mic_level = float(np.sqrt(np.mean(samples * samples)))
-        if not self.listening or self.dictating or time.monotonic() < self.dict_quiet_until:
-            if self.gate.frames is not None:
-                self.gate.reset()  # OpenWhispr owns this speech; never also send it to T3
-            return
-        try:
-            voiced = self.vad.is_speech(frame, RATE)
-        except Exception:
-            voiced = False
-        for kind, audio in self.gate.push(frame, voiced):
-            if kind == 'start':
-                self.capture_ticket = self.routes.ticket()
-                self.notice.put(('speech-start', None))
-                continue
-            if kind == 'confirm':
-                self.notice.put(('speech-confirmed', None))
-                continue
-            ticket, self.capture_ticket = self.capture_ticket, None
-            if ticket is None or self.gate.last_voiced < self.gate.confirm_frames:
-                self.notice.put(('discarded', 'noise' if ticket else 'voice off'))
-                continue
-            self.notice.put(('speech-end', None))
-            self.asr_pending += 1
-            threading.Thread(target=self.deliver_audio, args=(audio, ticket), daemon=True).start()
+        # Meter only. OpenWhispr owns the held recording and supplies the final history row.
 
     def deliver_audio(self, audio, ticket):
         started = time.perf_counter()
@@ -655,6 +672,8 @@ class Engine:
             self.meta['openwhisprError'] = type(exc).__name__
             return
         for text in texts:
+            if self.review:
+                continue  # OpenWhispr can paste into the focused editor; never replace its draft.
             ticket = self.routes.ticket()
             if ticket is None or self.mic_muted:
                 continue
@@ -821,6 +840,9 @@ class Engine:
                     self.pin_until = time.monotonic() + 3.0
                     self.text = 'Ready · Ctrl+Alt+M'
                 elif kind == 'stop':
+                    self.pending = None
+                    if self.review:
+                        self.cancel_review()
                     self.stop()
                     self.set_state('stopped')
                 elif kind == 'dict-start':
@@ -838,7 +860,9 @@ class Engine:
                         self.dict_quiet_until = time.monotonic() + 0.6
                         self.update_mic()
                 elif kind == 'hotkey':
-                    if self.current or not self.jobs.empty() or self.state in ('speaking', 'reading'):
+                    if self.review:
+                        self.cancel_review()
+                    elif self.current or not self.jobs.empty() or self.state in ('speaking', 'reading'):
                         self.stop()
                         self.silent.clear()
                         self.set_state('stopped')
@@ -869,6 +893,7 @@ class Engine:
                     self.confirmed = False
                     self.set_state(self.idle_state())
                 elif kind == 'sent':
+                    self.finish_review()
                     words, asr_ms, total_ms = value
                     self.meta['utterancesSent'] += 1
                     self.meta.update(lastAsrMs=asr_ms, lastSendMs=total_ms)
@@ -880,6 +905,7 @@ class Engine:
                 elif kind == 'you':
                     self.show_bubble('you', value, None, 3.0)
                 elif kind == 'send-error':
+                    self.finish_review(value)
                     self.error_at = time.monotonic()
                     self.confirmed = False
                     self.set_state('error', 'Send failed')
@@ -926,6 +952,7 @@ class Engine:
             self.meta['connectionError'] = type(exc).__name__
         self.meta['updatedAt'] = time.time()
         self.meta['mode'] = self.mode
+        self.meta['inputMonitorActive'] = self.mic_stream is not None
         self.follow_tick()
         self.meta.update(followActive=self.follow_active,
                          activeThreadId=self.active_thread['id'] if self.active_thread else None)
@@ -1062,6 +1089,13 @@ class Engine:
         cx, bottom = anchor or self.anchor()
         scale = self.scale()
         width, height = int(size[0] * scale), int(size[1] * scale)
+        monitor = user32.MonitorFromPoint(wintypes.POINT(int(cx), int(bottom)-20), 2)
+        info = MONITORINFO()
+        info.size = ctypes.sizeof(info)
+        if user32.GetMonitorInfoW(monitor, ctypes.byref(info)):
+            width, height = min(width, info.work.right-info.work.left), min(height, info.work.bottom-info.work.top)
+            cx, bottom = clamp_anchor((cx,bottom), (width,height),
+                                      (info.work.left,info.work.top,info.work.right,info.work.bottom))
         user32.SetWindowPos(self.hwnd, HWND_TOPMOST, int(cx - width / 2), int(bottom - height), width, height,
                             SWP_NOACTIVATE | SWP_ASYNC)
         self.size = size
@@ -1085,13 +1119,14 @@ class Engine:
         self.hovered = hovered
 
     def set_expanded(self, expanded):
-        if self.hwnd is None or expanded == self.expanded:
+        if self.hwnd is None or self.review or expanded == self.expanded:
             return
         self.expanded = expanded
         if not expanded:
             self.panel_extra = False
         self.show_until = time.monotonic() + LINGER
         self.place(self.target_size())
+        self.set_review_focus(expanded)  # keyboard input is intentional while settings are open
 
     def set_panel_extra(self, extra):
         with self.lock:
@@ -1101,8 +1136,9 @@ class Engine:
 
     def close(self):
         self.quit.set()
-        if self.pill_hwnd and user32.IsWindow(self.pill_hwnd):
-            set_hidden_region(self.pill_hwnd, False)
+        for hwnd in self.pill_hwnds:
+            if user32.IsWindow(hwnd):
+                set_hidden_region(hwnd, False)
         self.stop()
         if self.mic_stream:
             self.mic_stream.abort()
@@ -1146,9 +1182,6 @@ class Api:
     def cancel_review(self):
         self._engine.cancel_review()
 
-    def toggle_mode(self):
-        self._engine.toggle_mode()
-
     def toggle_cleanup(self):
         self._engine.toggle_cleanup()
 
@@ -1175,9 +1208,6 @@ class Api:
 
     def toggle_dock(self):
         self._engine.toggle_dock()
-
-    def toggle_hide_pill(self):
-        self._engine.toggle_hide_pill()
 
     def quit(self):
         self._engine.close()

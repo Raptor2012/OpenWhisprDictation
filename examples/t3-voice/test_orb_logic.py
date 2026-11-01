@@ -24,6 +24,64 @@ def engine(**fields):
 
 
 class VisibilityTests(unittest.TestCase):
+    def test_more_dictation_does_not_replace_an_editable_review(self):
+        e = engine(review={'id':1,'text':'My edited draft'},openwhispr=Mock(poll=lambda:['more dictated words']),
+                   routes=Mock(),stop=Mock(),mic_muted=False)
+        e.forward_openwhispr()
+        self.assertEqual('My edited draft',e.review['text'])
+        e.routes.ticket.assert_not_called()
+
+    def test_level_monitor_opens_only_while_dictation_button_is_held(self):
+        e = engine(ready=True, voice_on=lambda: True, mode='handsfree', mic_muted=False,
+                   dictating=False,mic_stream=None,openwhispr=Mock())
+        with patch.object(t3_voice.sd,'RawInputStream') as stream:
+            e.update_mic()
+            stream.assert_not_called()
+            e.dictating=True
+            e.update_mic()
+            stream.assert_called_once()
+            stream.return_value.start.assert_called_once()
+            e.dictating=False
+            e.update_mic()
+            stream.return_value.abort.assert_called_once()
+            stream.return_value.close.assert_called_once()
+
+    def test_microphone_is_only_a_level_monitor_even_if_legacy_listening_flag_is_set(self):
+        for dictating in (False, True):
+            gate = Mock()
+            e = engine(listening=True, dictating=dictating, dict_quiet_until=0, gate=gate, vad=Mock(), notice=Mock())
+            e.mic_callback(bytes(t3_voice.FRAME*2),t3_voice.FRAME,None,None)
+            gate.push.assert_not_called()
+            e.vad.is_speech.assert_not_called()
+            e.notice.put.assert_not_called()
+
+    def test_expanded_panels_stay_inside_monitor_work_area(self):
+        for anchor in ((1900,1070), (20,1070), (960,20)):
+            cx, bottom = t3_voice.clamp_anchor(anchor, (480,504), (0,0,1920,1080))
+            self.assertGreaterEqual(cx-240, 0)
+            self.assertLessEqual(cx+240, 1920)
+            self.assertGreaterEqual(bottom-504, 0)
+            self.assertLessEqual(bottom, 1080)
+
+    def test_all_recorder_overlays_are_hidden_and_new_windows_are_discovered(self):
+        e = engine(pill_hwnds=set(), pill_scan_at=0, hide_pill=True, quit=Mock(is_set=lambda: False))
+        with patch.object(t3_voice, 'find_openwhispr_pills', return_value=[11, 22]) as find, \
+                patch.object(t3_voice, 'set_hidden_region') as hide, \
+                patch.object(t3_voice.user32, 'IsWindow', return_value=True):
+            e.manage_pill(force=True)
+            self.assertEqual({11,22}, e.pill_hwnds)
+            self.assertEqual({(11,True),(22,True)}, {call.args for call in hide.call_args_list})
+            find.return_value = [11,22,33]
+            e.manage_pill(force=True)
+            self.assertIn(33, e.pill_hwnds)
+            hide.assert_any_call(33, True)
+
+    def test_overlay_matching_keeps_settings_windows_available(self):
+        self.assertTrue(t3_voice.is_dictation_overlay('Voice Recorder', 0, 0))
+        self.assertTrue(t3_voice.is_dictation_overlay('OpenWhispr', 0x14020000, 0x08200008))
+        self.assertFalse(t3_voice.is_dictation_overlay('OpenWhispr', 0x00C00000, 0))
+        self.assertFalse(t3_voice.is_dictation_overlay('Control Panel', 0, 0x08000000))
+
     def test_punctuation_and_length_never_bypass_continuation_grace(self):
         for text in ('I was thinking.', ' '.join(['word'] * 20)):
             e = engine(routes=Mock(current=lambda t: True), dispatch=Mock())
@@ -132,6 +190,16 @@ class VisibilityTests(unittest.TestCase):
         e.dispatch.assert_called_once_with('Edited transcript', ticket, 2, 1, approved=True)
         e.confirm_review(7, 'duplicate')
         self.assertEqual(1, e.dispatch.call_count)
+        self.assertIsNotNone(e.review)
+        self.assertEqual('Edited transcript', e.review['text'])
+        self.assertTrue(e.review['sending'])
+        e.finish_review('Temporary network failure')
+        self.assertFalse(e.review['sending'])
+        self.assertEqual('Edited transcript', e.review['text'])
+        e.confirm_review(7, 'Retry edited transcript')
+        self.assertEqual(2, e.dispatch.call_count)
+        e.finish_review()
+        self.assertIsNone(e.review)
 
     def test_follow_requires_a_resolved_active_thread(self):
         e = engine(follow_active=True, thread='one', routes=Mock(preferences={'one': True}))
@@ -201,7 +269,7 @@ class VisibilityTests(unittest.TestCase):
             e = engine(listening=True, dictating=dictating, dict_quiet_until=quiet_until,
                        gate=gate, vad=Mock(), notice=Mock())
             e.mic_callback(bytes(t3_voice.FRAME * 2), t3_voice.FRAME, None, None)
-            self.assertIsNone(gate.frames)
+            self.assertIsNotNone(gate.frames)  # the meter does not touch transcription buffers
             e.vad.is_speech.assert_not_called()
             e.notice.put.assert_not_called()
 

@@ -91,9 +91,9 @@ The follow, pin and delivery preferences survive restarts. Settings grow upward 
 
 Set `LOCAL_CLEANUP_MODEL=qwen3.5-2b-q4_k_m` in `%APPDATA%\OpenWhisprDictation\.env` with the GGUF in `~/.cache/openwhispr/models/`. On an 8 GB card, VRAM headroom matters more than model speed: a model that fits beside your other GPU work beats a bigger one that spills.
 
-## Voice effect
+## Techno audio effect
 
-Options → **FRIDAY voice effect** (on by default) makes Maeve sound like an interface voice: a minimum-phase EQ (high-pass, presence and air), a very short modulated comb for a holographic sheen, light chorus, faint ring-mod shimmer, gentle saturation, and a bright 0.75 s plate reverb with 14 ms pre-delay (`VoiceFx` in `t3_voice_core.py`). It costs about 2 ms per 100 ms of audio and adds no delay: an impulse comes out at sample 0.
+Options → **Techno audio effect** (on by default) makes Maeve sound like an interface voice: a minimum-phase EQ (high-pass, presence and air), a very short modulated comb for a holographic sheen, light chorus, faint ring-mod shimmer, gentle saturation, and a bright 0.75 s plate reverb with 14 ms pre-delay (`VoiceFx` in `t3_voice_core.py`). It costs about 2 ms per 100 ms of audio and adds no delay: an impulse comes out at sample 0.
 
 ## Which thread Maeve speaks for
 

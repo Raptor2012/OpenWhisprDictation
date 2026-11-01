@@ -198,7 +198,7 @@ class Engine:
         self.mode = 'openwhispr'  # hold/release defines turns; never listen continuously
         self.prefs.set('mode', self.mode)
         self.cleanup = bool(self.prefs.get('cleanup', False))
-        self.voice_fx = bool(self.prefs.get('voiceFx', True))   # FRIDAY-style reverb and sheen
+        self.voice_fx = bool(self.prefs.get('voiceFx', True))   # Techno audio effect: interface EQ, sheen and plate reverb
         self.fx = VoiceFx()
         self.expanded_at = 0.0
         self.card_focused = False

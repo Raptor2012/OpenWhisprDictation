@@ -86,7 +86,7 @@ class _OverlapAdd:
 
 
 class VoiceFx:
-    """Streaming "FRIDAY" interface voice, numpy only, no added latency.
+    """Streaming "Techno audio effect" interface voice, numpy only, no added latency.
 
     Chain: minimum-phase EQ (high-pass, presence, air) -> a very short modulated comb for the
     holographic interface sheen -> light chorus -> faint ring-mod shimmer -> soft saturation,

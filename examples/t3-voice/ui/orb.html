@@ -102,7 +102,8 @@
 
   /* settings card */
   #card { min-height:200px; position:absolute; left:12px; right:12px; bottom:150px; max-height:calc(100% - 160px); background:var(--glass); backdrop-filter:blur(18px) saturate(1.3); border:1px solid var(--line); border-radius:20px; padding:10px 12px 10px; box-sizing:border-box; opacity:0; transform:translateY(14px) scale(.94); transform-origin:50% 100%; transition:opacity .25s ease, transform .45s var(--spring); pointer-events:none; box-shadow:0 8px 20px rgba(0,0,0,.26); }
-  #card.open { opacity:1; transform:none; pointer-events:auto; }
+  #card:not(.open) { visibility:hidden; transition:none; }
+  #card.open { visibility:visible; opacity:1; transform:none; pointer-events:auto; }
   #devices { position:absolute; inset:0; box-sizing:border-box; padding:12px 14px; border-radius:20px; background:rgba(22,23,29,.97);
              display:none; flex-direction:column; gap:7px; }
   #devices.open { display:flex; }
@@ -680,8 +681,12 @@ const barMic = document.getElementById('barMic'), barMaeve = document.getElement
 const reviewEl = document.getElementById('review'), reviewText = document.getElementById('reviewText');
 let reviewId = null;
 let settingsGeneration = 0, settingsPending = 0, settingsWrites = Promise.resolve();
+let hoverGeneration=0, hoverPending=0, hoverWrites=Promise.resolve();
+let cardViewport=[320,360];
 function setText(el,value){if(el.textContent!==value)el.textContent=value;}
 function render(){
+  if(!settingsPending)cardViewport=S.viewportTarget||[320,S.dock?270:360];
+  if(typeof S.hovered==='boolean'&&!hoverPending){hovering=S.hovered;document.body.classList.toggle('hover',hovering);}
   document.body.classList.toggle('high-contrast',!!S.highContrast);
   document.body.classList.toggle('reduced-motion',motionReduced());
   document.getElementById('contrastSel').checked=!!S.highContrast;
@@ -694,7 +699,7 @@ function render(){
   if(progress?.fraction!=null){const n=Math.max(0,Math.min(1,progress.fraction));fill.style.transform=`scaleX(${n})`;track.setAttribute('aria-valuenow',String(Math.round(n*100)));track.setAttribute('aria-valuetext',`${Math.round(n*100)}% played`);}
   else {fill.style.transform='';track.removeAttribute('aria-valuenow');track.setAttribute('aria-valuetext','Reply still being generated');}
   document.body.classList.toggle('audio-active',['hearing','dictating'].includes(S.state)||playbackActive());
-  if (S.review) applyExpanded(false);
+  if (S.review && !settingsPending) applyExpanded(false);
   else if (!settingsPending && S.expanded !== undefined && expanded !== !!S.expanded) applyExpanded(!!S.expanded);
   document.body.classList.toggle('reviewing', !!S.review);
   reviewEl.classList.toggle('show', !!S.review);
@@ -725,6 +730,7 @@ function render(){
     el.setAttribute('aria-pressed',String(!!on));el.setAttribute('aria-label',el.title);
   }
   if (!!S.dock !== barMode) layout(!!S.dock);
+  syncCardViewport();
   document.getElementById('mDock').classList.toggle('on', !!S.dock);
   badge.textContent = S.micMuted && S.maeveMuted ? 'mic · voice off' : S.micMuted ? 'mic off' : S.maeveMuted ? 'voice off' : '';
   badge.classList.toggle('show', !!badge.textContent && S.visible);
@@ -752,16 +758,18 @@ function render(){
 }
 const Q = new URLSearchParams(location.search), DEMO = Q.get('demo');
 function api(name, ...args){ if (!DEMO && window.pywebview) return pywebview.api[name](...args); }
-function acceptSnapshot(next, generation, wasPending, appearanceVersion=appearanceGeneration, appearanceWasPending=false){
+function acceptSnapshot(next, generation, wasPending, appearanceVersion=appearanceGeneration, appearanceWasPending=false, hoverVersion=hoverGeneration, hoverWasPending=false){
+  if(hoverWasPending||hoverPending||hoverVersion!==hoverGeneration)next.hovered=hovering;
   if(appearanceWasPending||appearancePending||appearanceVersion!==appearanceGeneration){next.highContrast=S.highContrast;next.reducedMotion=S.reducedMotion;}
   // A poll already in flight must not undo a newer click or a write it raced with.
-  if (wasPending || settingsPending || generation !== settingsGeneration) next.expanded = expanded;
+  if (wasPending || settingsPending || generation !== settingsGeneration){next.expanded=expanded;next.viewportTarget=cardViewport;if(wantExpanded)next.review=null;}
   S = next; render();
 }
 async function poll(){
   const generation = settingsGeneration, wasPending = settingsPending > 0;
   const appearanceVersion=appearanceGeneration, appearanceWasPending=appearancePending>0;
-  try { acceptSnapshot(await pywebview.api.poll(choosingDelivery), generation, wasPending, appearanceVersion, appearanceWasPending); } catch(e){}
+  const hoverVersion=hoverGeneration, hoverWasPending=hoverPending>0;
+  try { acceptSnapshot(await pywebview.api.poll(choosingDelivery), generation, wasPending, appearanceVersion, appearanceWasPending, hoverVersion, hoverWasPending); } catch(e){}
   setTimeout(poll, 50);
 }
 if (DEMO) {
@@ -781,24 +789,66 @@ if (DEMO) {
   window.addEventListener('pywebviewready', poll);
 }
 let wantExpanded = false;   // the latest requested state; the card opens only after the window grows
-function applyExpanded(v){ expanded=v; wantExpanded=v; card.classList.toggle('open', v); if(!v){ devicesEl?.classList.remove('open'); document.getElementById('appearance').classList.remove('open'); choosingDelivery=false; } if(!v){document.getElementById('list').classList.remove('open'); document.getElementById('menu').classList.remove('open');} }
-function setExpanded(v){
-  if (S.review || wantExpanded===v) return;
-  wantExpanded = v;
-  ++settingsGeneration; ++settingsPending;
-  const generation = settingsGeneration;
-  S.expanded = v;
-  if (!v) applyExpanded(false);
-  // WebView bridge calls run on separate Python threads. Preserve click order. Open only after the
-  // window has grown, so the card never lays out over the orb in the small window first.
-  settingsWrites = settingsWrites.then(()=>api('set_expanded', v))
-    .then(()=> v ? new Promise(r=>setTimeout(r, 90)) : null)
-    .then(()=>{ if (v && wantExpanded && generation === settingsGeneration) applyExpanded(true); })
-    .catch(()=>{}).finally(()=>{--settingsPending;});
+function cardViewportReady(){
+  return innerWidth>=cardViewport[0]-1.5&&innerHeight>=cardViewport[1]-1.5;
 }
+function syncCardViewport(){card.classList.toggle('open',expanded&&cardViewportReady());}
+window.addEventListener('resize',syncCardViewport);
+function applyExpanded(v){
+  expanded=v;wantExpanded=v;syncCardViewport();
+  if(!v){devicesEl?.classList.remove('open');document.getElementById('appearance').classList.remove('open');choosingDelivery=false;
+    document.getElementById('list').classList.remove('open');document.getElementById('menu').classList.remove('open');}
+}
+function waitForCardViewport(generation){
+  return new Promise(resolve=>{
+    const deadline=performance.now()+2500;
+    const check=()=>{
+      if(performance.now()>deadline)return resolve(false);
+      if(generation!==settingsGeneration||!wantExpanded)return resolve(false);
+      if(cardViewportReady())return resolve(true);
+      requestAnimationFrame(check);
+    };check();
+  });
+}
+function setExpanded(v){
+  if((v&&S.review?.sending)||wantExpanded===v)return;
+  wantExpanded=v;
+  if(v){S.review=null;reviewEl.classList.remove('show');cardViewport=[Math.min(320,screen.availWidth),Math.min(S.dock?270:360,screen.availHeight)];}
+  ++settingsGeneration;++settingsPending;
+  const generation=settingsGeneration, bridge=api;
+  S.expanded=v;
+  if(!v)applyExpanded(false);
+  settingsWrites=settingsWrites.then(()=>bridge('set_expanded',v)).then(ack=>{
+    if(generation!==settingsGeneration||!wantExpanded)return false;
+    if(ack&&ack.expanded===false){wantExpanded=false;return false;}
+    if(ack?.size)cardViewport=ack.size;
+    return v?waitForCardViewport(generation):false;
+  }).then(async ready=>{
+    if(generation!==settingsGeneration)return;
+    if(ready&&wantExpanded){S.viewportTarget=cardViewport;applyExpanded(true);}
+    else if(v&&wantExpanded){S.expanded=false;applyExpanded(false);await bridge('set_expanded',false);}
+  })
+    .catch(()=>{if(generation===settingsGeneration)applyExpanded(false);}).finally(()=>{--settingsPending;});
+}
+function toggleSettings(){setExpanded(!wantExpanded);}
 function panelExtra(){ api('set_panel_extra', document.getElementById('list').classList.contains('open')); }
-function setHover(v){ if (hovering===v) return; hovering = v; document.body.classList.toggle('hover', v); api('set_hover', v); render(); }
-document.getElementById('orbwrap').addEventListener('mouseenter', ()=> setHover(true));
+function setHover(v){
+  if(hovering===v)return;
+  hovering=v;S.hovered=v;document.body.classList.toggle('hover',v);
+  ++hoverGeneration;++hoverPending;const bridge=api;
+  hoverWrites=hoverWrites.then(()=>bridge('set_hover',v)).catch(()=>{}).finally(()=>{--hoverPending;});
+  render();
+}
+function pointerOverControls(x,y){
+  const rect=cv.getBoundingClientRect();
+  if(Math.hypot(x-rect.left-CX,y-rect.top-CY)<=R*1.6)return true;
+  for(const id of barMode?['bar']:['muteMic','muteMaeve','toBar']){
+    const r=document.getElementById(id).getBoundingClientRect();
+    if(x>=r.left&&x<=r.right&&y>=r.top&&y<=r.bottom)return true;
+  }
+  return false;
+}
+document.addEventListener('pointermove',e=>setHover(pointerOverControls(e.clientX,e.clientY)));
 let choosingDelivery=false;
 document.getElementById('delivery').addEventListener('pointerdown', ()=>{choosingDelivery=true;});
 document.getElementById('delivery').addEventListener('blur', ()=>{choosingDelivery=false;});
@@ -809,11 +859,16 @@ document.body.addEventListener('mouseleave', dismissAfterLeave);
 let dragStart=null;
 cv.addEventListener('pointerdown',e=>{dragStart=[e.screenX,e.screenY];});
 cv.addEventListener('pointercancel',()=>{dragStart=null;});
-cv.addEventListener('click', e=> {const moved=dragStart&&Math.hypot(e.screenX-dragStart[0],e.screenY-dragStart[1])>5;dragStart=null;if(!moved)setExpanded(!expanded);});
+function handleOrbClick(e){
+  e.stopPropagation(); // The canvas is nested in the toolbar button while docked.
+  const moved=dragStart&&Math.hypot(e.screenX-dragStart[0],e.screenY-dragStart[1])>5;
+  dragStart=null;if(!moved)toggleSettings();
+}
+cv.addEventListener('click',handleOrbClick);
 function toggleDock(){ S.dock = !S.dock; setExpanded(false); setHover(false); layout(!!S.dock); api('toggle_dock'); }
 document.getElementById('toBar').addEventListener('click', (e)=>{ e.stopPropagation(); toggleDock(); });
 document.getElementById('barExpand').addEventListener('click', (e)=>{ e.stopPropagation(); toggleDock(); });
-document.getElementById('bar').addEventListener('mouseenter', ()=> setHover(true));
+document.getElementById('barOrb').onclick=toggleSettings;
 function toggleMicMute(){S.micMuted=!S.micMuted;render();api('toggle_mic_mute');}
 function toggleMaeveMute(){S.maeveMuted=!S.maeveMuted;render();api('toggle_maeve_mute');}
 barMic.addEventListener('click', (e)=>{ e.stopPropagation(); toggleMicMute(); });
@@ -882,7 +937,7 @@ document.addEventListener('keydown', e=>{
     if(e.key==='Enter') sendReview(); else api('cancel_review');
     return;
   }
-  if (e.key==='Escape') { if (expanded) setExpanded(false); else api('stop'); }
+  if (e.key==='Escape') { if (wantExpanded||expanded) setExpanded(false); else api('stop'); }
 });
 </script>
 </body>

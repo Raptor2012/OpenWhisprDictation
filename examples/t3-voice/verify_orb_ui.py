@@ -46,6 +46,7 @@ def run():
         window.native.BeginInvoke(MethodInvoker(apply))
         if not done.wait(5):
             raise RuntimeError('Resize did not complete')
+        window.evaluate_js('S.viewportTarget=%s;' % json.dumps([width,height]))
 
     def capture(name):
         done, saved = threading.Event(), {}
@@ -341,6 +342,45 @@ def run():
                 or actions['edited']!='Edited preview' or not actions['disabled'] or actions['missingRoles']
                 or actions['legacyPillToggle'] or actions['legacyHandsfreeControl'] or actions['errors']):
             report['failures'].append({'actions':actions})
+        # Native resizing may take much longer than 90 ms; never paint a card in orb space.
+        resize(180,150)
+        window.evaluate_js("""S.review=null;S.dock=false;S.expanded=false;applyExpanded(false);render();
+          window.qaSavedResizeApi=api;
+          api=async(name,...args)=>name==='set_expanded'?{expanded:args[0],size:[320,360]}:qaSavedResizeApi(name,...args);
+          setExpanded(true);""")
+        time.sleep(.25)
+        resizeRace=window.evaluate_js("({hiddenUntilResize:!card.classList.contains('open'),stillWanted:wantExpanded})")
+        resize(320,360)
+        time.sleep(.25)
+        resizeRace['opensAfterResize']=window.evaluate_js("card.classList.contains('open')")
+        window.evaluate_js("setExpanded(false);")
+        time.sleep(.15)
+        rapid=window.evaluate_js("""(()=>{
+          if(typeof toggleSettings!=='function')return false;
+          toggleSettings();toggleSettings();return !wantExpanded&&!card.classList.contains('open');
+        })()""")
+        time.sleep(.2)
+        resizeRace['doubleTapCancels']=rapid and window.evaluate_js("!expanded&&!card.classList.contains('open')")
+        resizeRace['noClosingGhost']=window.evaluate_js("getComputedStyle(card).visibility==='hidden'")
+        resizeRace['singleCanvasActivation']=window.evaluate_js("""(()=>{
+          if(typeof handleOrbClick!=='function')return false;
+          let stopped=false;dragStart=null;
+          handleOrbClick({screenX:0,screenY:0,stopPropagation:()=>{stopped=true;}});
+          const once=wantExpanded;toggleSettings();return stopped&&once&&!wantExpanded;
+        })()""")
+        resizeRace['preciseHover']=window.evaluate_js("""(()=>{
+          const r=cv.getBoundingClientRect();
+          return pointerOverControls(r.left+CX,r.top+CY)&&!pointerOverControls(r.left+2,r.top+2);
+        })()""")
+        resizeRace['staleHoverPoll']=window.evaluate_js("""(()=>{
+          setHover(true);const old=hoverGeneration;setHover(false);
+          acceptSnapshot({...S,hovered:true},settingsGeneration,false,appearanceGeneration,false,old,false);
+          return !hovering&&!document.body.classList.contains('hover');
+        })()""")
+
+        window.evaluate_js('api=qaSavedResizeApi;')
+        report['resizeRace']=resizeRace
+        if not all(resizeRace.values()):report['failures'].append({'resizeRace':resizeRace})
         # An old poll must not undo a just-clicked appearance preference.
         appearanceRace=window.evaluate_js("""(()=>{
           const savedApi=api;api=()=>new Promise(()=>{});

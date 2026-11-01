@@ -216,6 +216,7 @@ class Engine:
         self.window = None
         self.hwnd = None
         self.size = COMPACT
+        self.viewport_target = COMPACT
         self.expanded = False
         self.panel_extra = False
         self.hovered = False
@@ -470,7 +471,8 @@ class Engine:
                 'hidePill': self.hide_pill, 'dictKey': self.prefs.get('dictKeyLabel', ''),
                 'dictActivation': self.dict_mode,
                 'followActive': self.follow_active,
-                'expanded': self.expanded,
+                'expanded': self.expanded, 'hovered': self.hovered,
+                'viewportTarget': list(self.viewport_target),
                 'voiceFx': self.voice_fx,
                 'delivery': self.delivery,
                 'review': {key: self.review.get(key) for key in ('id', 'text', 'title', 'sending', 'error')} if self.review else None,
@@ -1263,8 +1265,26 @@ class Engine:
         if (self.card_focused and not ours and not inside) or (self.outside_since and now - self.outside_since > 2.5):
             self.set_expanded(False)
 
+    def refresh_hover(self):
+        """Recover from missed WebView leave events; transparent window space is not a hover target."""
+        if not self.hovered or not self.hwnd or self.expanded:
+            return
+        point, rect = wintypes.POINT(), wintypes.RECT()
+        user32.GetCursorPos(ctypes.byref(point))
+        user32.GetWindowRect(self.hwnd, ctypes.byref(rect))
+        scale = self.scale()
+        x = (point.x - (rect.left + rect.right) / 2) / scale
+        y = (rect.bottom - point.y) / scale
+        if self.dock:
+            self.hovered = abs(x) <= 98 and 4 <= y <= 44
+        else:
+            self.hovered = (x*x + (y-66)**2 <= 48**2 or
+                            (abs(x)-60)**2 + (y-66)**2 <= 18**2 or
+                            (x-39)**2 + (y-103)**2 <= 14**2)
+
     def desktop_tick(self):
         now = time.monotonic()
+        self.refresh_hover()
         self.card_watch(now)
         if now >= self.t3_scan_at:
             if not (self.t3_hwnd and user32.IsWindow(self.t3_hwnd)):
@@ -1333,7 +1353,8 @@ class Engine:
             cx, bottom = clamp_anchor((cx,bottom), (width,height),
                                       (info.work.left,info.work.top,info.work.right,info.work.bottom))
         user32.SetWindowPos(self.hwnd, HWND_TOPMOST, int(cx - width / 2), int(bottom - height), width, height,
-                            SWP_NOACTIVATE | SWP_ASYNC)
+                            SWP_NOACTIVATE)
+        self.viewport_target = (width / scale, height / scale)
         self.size = size
 
     def attach(self, hwnd):
@@ -1355,20 +1376,23 @@ class Engine:
         self.hovered = hovered
 
     def set_expanded(self, expanded):
-        if self.hwnd is None or expanded == self.expanded:
-            return
-        if expanded and self.review and not self.review.get('sending'):
-            self.review = None              # the settings card replaces an unsent draft
-            self.set_state(self.idle_state())
-        self.expanded = expanded
-        self.expanded_at = time.monotonic()
-        self.card_focused = False
-        self.outside_since = None
-        if not expanded:
-            self.panel_extra = False
-        self.show_until = time.monotonic() + LINGER
-        self.place(self.target_size())
-        self.set_review_focus(expanded)  # keyboard input is intentional while settings are open
+        with self.lock:
+            if self.hwnd is not None and expanded != self.expanded:
+                if expanded and self.review and self.review.get('sending'):
+                    return {'expanded': self.expanded, 'size': list(self.viewport_target)}
+                if expanded and self.review:
+                    self.review = None
+                    self.set_state(self.idle_state())
+                self.expanded = expanded
+                self.expanded_at = time.monotonic()
+                self.card_focused = False
+                self.outside_since = None
+                if not expanded:
+                    self.panel_extra = False
+                self.show_until = time.monotonic() + LINGER
+                self.place(self.target_size())
+                self.set_review_focus(expanded)
+            return {'expanded': self.expanded, 'size': list(self.viewport_target)}
 
     def set_panel_extra(self, extra):
         with self.lock:
@@ -1454,7 +1478,7 @@ class Api:
         self._engine.test_voice()
 
     def set_expanded(self, expanded):
-        self._engine.set_expanded(bool(expanded))
+        return self._engine.set_expanded(bool(expanded))
 
     def set_hover(self, hovered):
         self._engine.set_hover(bool(hovered))

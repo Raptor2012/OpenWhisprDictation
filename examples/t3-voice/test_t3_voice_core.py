@@ -404,3 +404,21 @@ class AgentActivityTests(unittest.TestCase):
     def test_missing_schema_is_neutral(self):
         self.db.execute('DROP TABLE orchestration_v2_projection_runs');self.db.commit()
         self.assertEqual('unknown',self.activity()['activity'])
+
+
+class VoiceSheenTests(unittest.TestCase):
+    def test_parallel_micro_reflections_add_sheen_without_latency_or_chunk_seams(self):
+        import inspect
+        import numpy as np
+        self.assertIn('sheen',inspect.signature(VoiceFx).parameters)
+        t=np.arange(6000)/24000
+        x=(.15*np.sin(2*np.pi*410*t)+.08*np.sin(2*np.pi*2300*t)).astype(np.float32)
+        plain=VoiceFx(sheen=0).process(x)
+        whole=VoiceFx(sheen=.10).process(x)
+        fx=VoiceFx(sheen=.10)
+        chunked=np.concatenate([fx.process(x[i:i+317]) for i in range(0,len(x),317)])
+        self.assertGreater(float(np.max(np.abs(whole-plain))),.005)
+        self.assertLess(float(np.max(np.abs(whole-chunked))),1e-4)
+        impulse=np.zeros(1000,np.float32);impulse[0]=.1
+        self.assertGreater(abs(float(VoiceFx().process(impulse)[0])),.01)
+        self.assertTrue(np.isfinite(whole).all())

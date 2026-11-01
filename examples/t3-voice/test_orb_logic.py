@@ -668,3 +668,25 @@ class PlaybackFinalizationEdgeTests(unittest.TestCase):
     def test_voice_test_finishes_without_a_database_run(self):
         e=self.make('voice-test-123');e.finalize_playback()
         self.assertEqual(0,e.audio.playback_progress()['fraction'])
+
+
+class HoverRecoveryTests(unittest.TestCase):
+    def test_empty_transparent_window_space_cannot_keep_orb_hovered(self):
+        e=engine(hovered=True,hwnd=100,expanded=False,scale=lambda:1)
+        self.assertTrue(hasattr(e,'refresh_hover'),'native hover recovery missing')
+        def rect(hwnd,r):
+            r._obj.left,r._obj.top,r._obj.right,r._obj.bottom=0,0,340,300
+        for point,want in [((170,234),True),((110,234),True),((20,20),False),((500,500),False)]:
+            e.hovered=True
+            def cursor(p):p._obj.x,p._obj.y=point
+            with patch.object(t3_voice.user32,'GetWindowRect',side_effect=rect),patch.object(t3_voice.user32,'GetCursorPos',side_effect=cursor):
+                e.refresh_hover()
+            self.assertEqual(want,e.hovered,point)
+
+    def test_toolbar_hover_is_limited_to_toolbar_in_bubble_window(self):
+        e=engine(hovered=True,hwnd=100,dock=True,expanded=False,scale=lambda:1)
+        self.assertTrue(hasattr(e,'refresh_hover'),'native hover recovery missing')
+        def rect(hwnd,r):r._obj.left,r._obj.top,r._obj.right,r._obj.bottom=0,0,340,214
+        def cursor(p):p._obj.x,p._obj.y=170,30
+        with patch.object(t3_voice.user32,'GetWindowRect',side_effect=rect),patch.object(t3_voice.user32,'GetCursorPos',side_effect=cursor):e.refresh_hover()
+        self.assertFalse(e.hovered)

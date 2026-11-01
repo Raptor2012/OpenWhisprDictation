@@ -120,16 +120,17 @@ class VoiceFx:
 
     Chain: minimum-phase EQ (high-pass, presence, air) -> a very short modulated comb for the
     holographic interface sheen -> light chorus -> faint ring-mod shimmer -> soft saturation,
-    plus a bright, short plate reverb with pre-delay. Chunked output equals one-shot output.
+    plus parallel micro-reflection sheen and a tight, bright plate reverb with pre-delay. Chunked output equals one-shot output.
     """
-    def __init__(self, rate=24000, reverb=0.26, chorus=0.18, comb=0.16, ring=0.035, ring_hz=96.0,
-                 seconds=0.75, seed=7):
+    def __init__(self, rate=24000, reverb=0.20, chorus=0.14, comb=0.21, ring=0.04, ring_hz=96.0,
+                 seconds=0.55, seed=7, sheen=0.10):
         self.rate, self.wet, self.chorus, self.comb, self.ring, self.ring_hz = rate, reverb, chorus, comb, ring, ring_hz
+        self.sheen = sheen
         self.eq = _OverlapAdd(_minimum_phase_eq(rate))
         rng = np.random.default_rng(seed)
         n = int(rate * seconds)
         t = np.arange(n) / rate
-        ir = rng.standard_normal(n) * np.exp(-t / 0.11)                           # ~0.75 s plate decay
+        ir = rng.standard_normal(n) * np.exp(-t / 0.085)                           # compact plate: speech stays close
         for delay, gain in ((0.016, 0.7), (0.021, -0.5), (0.029, 0.42), (0.034, -0.33), (0.047, 0.25)):
             ir[int(delay * rate)] += gain * 5                                     # dense early reflections
         ir[:int(0.014 * rate)] = 0.0                                              # 14 ms pre-delay: voice stays upfront
@@ -166,9 +167,11 @@ class VoiceFx:
         comb_d = (0.00145 + 0.00015 * np.sin(2 * np.pi * 0.21 * t)) * self.rate
         d1 = (0.009 + 0.002 * np.sin(2 * np.pi * 0.33 * t)) * self.rate
         d2 = (0.014 + 0.0025 * np.sin(2 * np.pi * 0.51 * t + 1.3)) * self.rate
-        y = (x + self.comb * np.interp(at - comb_d, grid, buf)
+        # Opposite-polarity micro reflections add a clean metallic edge without shifting pitch.
+        sheen = 0.5 * (np.interp(at - .0032*self.rate, grid, buf) - np.interp(at - .0047*self.rate, grid, buf))
+        y = (x + self.sheen * sheen + self.comb * np.interp(at - comb_d, grid, buf)
              + self.chorus * 0.5 * (np.interp(at - d1, grid, buf) + np.interp(at - d2, grid, buf)))
-        y = y / (1.0 + self.comb + self.chorus * 0.5)
+        y = y / (1.0 + self.comb + self.sheen * 0.5 + self.chorus * 0.5)
         y = y * (1.0 - self.ring + self.ring * np.sin(2 * np.pi * self.ring_hz * t))
         y = (np.tanh(1.4 * y) / np.tanh(1.4)).astype(np.float32)                 # gentle density
         wet = self.reverb(y)

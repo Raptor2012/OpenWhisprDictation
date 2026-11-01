@@ -56,7 +56,7 @@ Use the **Transcript delivery** dropdown in settings to choose:
 
 **Options → Audio devices…** chooses Maeve's speaker and the microphone for orb levels and live preview; both default to System default, apply immediately, and survive restarts. OpenWhispr records dictation using its own microphone setting.
 
-The follow, pin and delivery preferences survive restarts. Settings grow upward when the thread list opens; the options menu stays compact. Expanded windows are clamped to the current monitor's work area. Controls and editable text do not initiate window dragging; the orb and toolbar waveform remain draggable. Controls expose keyboard focus and accessible labels. Stop with the Stop pill or Ctrl+Alt+M; the shortcut cancels an unsent review. Options also holds **Clean up with OpenWhispr's model** (adds its local cleanup latency) and **Start with Windows**.
+The follow, pin and delivery preferences survive restarts. Settings grow upward when the thread list opens; the options menu stays compact. Expanded windows are clamped to the current monitor's work area. Settings waits for the actual WebView viewport to grow before it paints, and closes immediately before shrinking. Rapid repeat taps cancel pending opens; hover is limited to the visible orb/controls and checked against the native cursor so empty transparent space cannot keep it awake. Controls and editable text do not initiate window dragging; the orb and toolbar waveform remain draggable. Controls expose keyboard focus and accessible labels. Stop with the Stop pill or Ctrl+Alt+M; the shortcut cancels an unsent review. Options also holds **Clean up with OpenWhispr's model** (adds its local cleanup latency) and **Start with Windows**.
 
 ## Files
 
@@ -68,7 +68,7 @@ The follow, pin and delivery preferences survive restarts. Settings grow upward 
 | `live_reader_core.py` | Read-only SQLite feed of T3 messages and Markdown-to-prose cleaning |
 | `live_reader.py` | Earlier reader; the panel reuses its persistent audio device |
 | `pair_t3.py` | Mints the MCP token through T3's pairing-code OAuth flow |
-| `test_*.py` | `python -m unittest test_orb_logic test_t3_voice_core test_live_reader -q` runs 99 tests, including audio-device resolution and switching, frequency-specific microphone/playback feedback, quiet-audio sensitivity, bubble completion/fade timing, bounded hold-only previews, stale-result rejection, held-recording completion races, meter peak retention, both overlay variants, work-area clamping, review failure/retry and routing; no audio needed |
+| `test_*.py` | `python -m unittest test_orb_logic test_t3_voice_core test_live_reader -q` runs 102 tests, including audio-device resolution and switching, frequency-specific microphone/playback feedback, quiet-audio sensitivity, bubble completion/fade timing, bounded hold-only previews, stale-result rejection, held-recording completion races, meter peak retention, both overlay variants, work-area clamping, review failure/retry and routing; no audio needed |
 | `verify_orb_ui.py` | Optional WebView2 verification: `python verify_orb_ui.py` checks 46 state/layout combinations, the transcribing placeholder, frequency-band response with quiet PCM fixtures, readable first lines and a scroll-only top fade, a monotonic completion fade, live word revisions, dismissal races and control callbacks in an isolated demo. It never opens the mic, simulates input or sends to T3. Evidence is written beneath `runtime/orb-ui-qa/`. |
 
 `t3-voice-token.txt`, settings, status and logs are git-ignored. The status file holds timings and counters only, never conversation text.
@@ -95,7 +95,7 @@ Set `LOCAL_CLEANUP_MODEL=qwen3.5-2b-q4_k_m` in `%APPDATA%\OpenWhisprDictation\.e
 
 ## Techno audio effect
 
-Options → **Techno audio effect** (on by default) makes Maeve sound like an interface voice: a minimum-phase EQ (high-pass, presence and air), a very short modulated comb for a holographic sheen, light chorus, faint ring-mod shimmer, gentle saturation, and a bright 0.75 s plate reverb with 14 ms pre-delay (`VoiceFx` in `t3_voice_core.py`). It costs about 2 ms per 100 ms of audio and adds no delay: an impulse comes out at sample 0.
+Options → **Techno audio effect** (on by default) makes Maeve sound like an interface voice: a minimum-phase EQ (high-pass, presence and air), a very short modulated comb plus opposite-polarity 3.2/4.7 ms micro reflections for a FRIDAY-inspired metallic sheen, restrained chorus, faint ring-mod shimmer, gentle saturation, and a tighter 0.55 s plate reverb with 14 ms pre-delay (`VoiceFx` in `t3_voice_core.py`). It costs about 2 ms per 100 ms of audio and adds no delay: an impulse comes out at sample 0.
 
 ## Visual states and accessibility
 

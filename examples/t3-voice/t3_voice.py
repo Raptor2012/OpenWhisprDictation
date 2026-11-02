@@ -31,8 +31,9 @@ from audio_duck import AudioDucker
 from diagnostics import write_status
 from live_reader import ContinuousAudio
 from live_reader_core import Message
+import t3_voice_core
 from t3_voice_core import (DictationPreview, DictationWatch, VoiceFx, remove_sent_draft_text, matching_user_submission, read_agent_activity, audio_device_choices, resolve_audio_device, OpenWhisprFeed, Routes, StreamingFeed, UtteranceGate, cleanup_text,
-                           audio_feedback, list_threads, parse_hotkey, parse_thread_url, read_env, send_message, transcribe)
+                           audio_feedback, list_threads, log_timing, parse_hotkey, parse_thread_url, read_env, send_message, transcribe, transcribe_result, WakeQueue)
 
 ROOT = Path(__file__).resolve().parent
 DB = Path.home() / '.t3/userdata/statev2.sqlite'
@@ -200,7 +201,7 @@ class Engine:
         self.threads = list_threads(DB)
         self.openwhispr = OpenWhisprFeed()
         self.lock = threading.RLock()
-        self.notice = queue.Queue()
+        self.notice = WakeQueue(quiet=('active-thread', 'active-thread-error'))  # 8 Hz UIA reports need no wake
         self.jobs = queue.Queue(maxsize=256)
         self.cancel = threading.Event()
         self.quit = threading.Event()
@@ -299,6 +300,7 @@ class Engine:
         self.review_seq = 0
         self.review_poll_at = 0.0
         self.dictation_started_wall = 0.0
+        self.dict_released_at = None   # perf_counter of the last dictation key release
         self.read_openwhispr_settings()
         self.meta = {'pid': os.getpid(), 'state': 'loading', 'voice': 'Maeve', 'model': 'Phonon 31M',
                      'asr': 'parakeet-0.6b via sherpa ws:6006', 'chunksSpoken': 0, 'utterancesSent': 0,
@@ -795,15 +797,18 @@ class Engine:
 
     def preview_audio(self, session, audio):
         started = time.perf_counter()
-        text, error = '', ''
+        text, error, tokens, stamps = '', '', [], []
         try:
-            text = transcribe(audio, RATE, timeout=1.5)
+            result = transcribe_result(audio, RATE, timeout=1.5)
+            text, tokens, stamps = result['text'], result['tokens'], result['timestamps']
         except Exception as exc:
             error = type(exc).__name__
-        self.notice.put(('dict-preview', (session, text, (time.perf_counter()-started)*1000, error)))
+        elapsed = (time.perf_counter()-started)*1000
+        log_timing('preview', ms=elapsed, windowS=len(audio) / 2 / RATE, error=error or None)
+        self.notice.put(('dict-preview', (session, text, elapsed, error, tokens, stamps)))
 
-    def accept_dictation_preview(self, session, text, elapsed, error):
-        accepted = self.dict_preview.complete(session, text)
+    def accept_dictation_preview(self, session, text, elapsed, error, tokens=None, timestamps=None):
+        accepted = self.dict_preview.complete(session, text, tokens, timestamps)
         if accepted and not self.review:
             self.dict_preview_text = accepted[-1200:]
             self.meta['lastPreviewMs'] = elapsed
@@ -857,13 +862,17 @@ class Engine:
     def dispatch(self, text, ticket, asr_ms, started, approved=False):
         threading.Thread(target=self.deliver_text, args=(text, ticket, asr_ms, started, approved), daemon=True).start()
 
-    def deliver_text(self, text, ticket, asr_ms, started, approved=False):
+    def deliver_text(self, text, ticket, asr_ms, started, approved=False, cleaned=False):
         source_text = text
         if approved and self.review and self.review.get('ticket') == ticket:
             source_text = self.review.get('sourceText',text)
         try:
-            if self.cleanup and not approved:
+            # OpenWhispr's own cleanup already rewrote this dictation: a second LLM pass only adds latency.
+            if self.cleanup and not approved and not cleaned:
+                cleanup_started = time.perf_counter()
                 text = cleanup_text(text)
+                self.meta['lastCleanupMs'] = (time.perf_counter() - cleanup_started) * 1000
+                log_timing('maeve-cleanup', ms=self.meta['lastCleanupMs'])
             if not self.routes.current(ticket):
                 self.notice.put(('discarded', 'target changed'))
                 return
@@ -877,7 +886,10 @@ class Engine:
                 self.notice.put(('drafted', None))
                 return
             self.notice.put(('sending', None))
+            send_started = time.perf_counter()
             send_message(ticket.thread, text)
+            self.meta['lastMcpMs'] = (time.perf_counter() - send_started) * 1000
+            log_timing('t3-send', ms=self.meta['lastMcpMs'], approved=approved)
             self.notice.put(('you', text))
             self.notice.put(('sent', (len(text.split()), asr_ms, (time.perf_counter() - started) * 1000)))
             try:
@@ -904,7 +916,7 @@ class Engine:
             threading.Thread(target=self._forward, args=(text, ticket), daemon=True).start()
 
     def _forward(self, text, ticket):
-        self.deliver_text(text, ticket, 0.0, time.perf_counter())
+        self.deliver_text(text, ticket, 0.0, time.perf_counter(), cleaned=bool(getattr(text, 'cleaned', False)))
 
     # ----- speech out -----
     def hotkey(self):
@@ -920,12 +932,12 @@ class Engine:
             dict_down = bool(keys) and all(user32.GetAsyncKeyState(key) & 0x8000 for key in keys)
             if self.dict_mode == 'push':
                 if dict_down and not dict_held:
-                    self.notice.put(('dict-start', None))
+                    self.notice.put(('dict-start', time.perf_counter()))
                 elif dict_held and not dict_down:
-                    self.notice.put(('dict-stop', None))
+                    self.notice.put(('dict-stop', time.perf_counter()))
             elif dict_down and not dict_held:  # tap mode toggles
                 active = not active
-                self.notice.put(('dict-start' if active else 'dict-stop', None))
+                self.notice.put(('dict-start' if active else 'dict-stop', time.perf_counter()))
             dict_held = dict_down
 
     def stop(self):
@@ -982,7 +994,7 @@ class Engine:
             self.notice.put(('ready', None))
             while not self.quit.is_set():
                 try:
-                    message, generation = self.jobs.get(timeout=.05)
+                    message, generation, *queued = self.jobs.get(timeout=.05)
                 except queue.Empty:
                     continue
                 with self.audio.cv:
@@ -1007,6 +1019,10 @@ class Engine:
                         if first is None:
                             first = (time.perf_counter() - start) * 1000
                             self.notice.put(('first-audio', first))
+                            if queued:
+                                log_timing('reply-first-audio', feedToAudioMs=(time.perf_counter() - queued[0]) * 1000,
+                                           queueMs=(start - queued[0]) * 1000, ttsFirstMs=first,
+                                           chars=len(message.text), underflows=self.audio.output_underflows)
                         clipped = np.clip(fx.process(chunk) if fx else chunk, -1, 1)
                         pcm = (clipped * 32767).astype('<i2').tobytes()
                         if not self.audio.put(pcm, epoch, cancel, reply_run=message.run):
@@ -1058,7 +1074,14 @@ class Engine:
                     self.update_click_through()
             except Exception as exc:
                 self.meta['loopError'] = type(exc).__name__
-            time.sleep(.04)
+            wake = getattr(self.notice, 'wake', None)
+            if wake is None:
+                time.sleep(.04)
+            else:
+                # A notice (hotkey, transcript, draft) is handled at once; while OpenWhispr is finishing a
+                # dictation its history row is polled every 10 ms (an idle poll is a ~0.1 ms stat).
+                wake.wait(.01 if self.dict_state == 'processing' else .04)
+                wake.clear()
 
     def ducking_wanted(self):
         """Maeve audibly speaking, or the dictation button held."""
@@ -1095,6 +1118,11 @@ class Engine:
                             user32.ShowWindowAsync(self.hwnd, SW_SHOWNOACTIVATE)
                             self.visible = True
                             self.set_review_focus(True)
+                        shown = time.perf_counter()
+                        released = getattr(self, 'dict_released_at', None)
+                        self.meta['lastNoticeToReviewMs'] = (shown - started) * 1000   # row noticed -> draft shown
+                        log_timing('review-shown', noticeToReviewMs=(shown - started) * 1000,
+                                   releaseToReviewMs=(shown - released) * 1000 if released else None)
                 elif kind == 'drafted':
                     self.confirmed = False
                     self.set_state(self.idle_state(), 'Draft ready · press Enter in T3')
@@ -1150,6 +1178,8 @@ class Engine:
                     self.accept_dictation_preview(*value)
                 elif kind == 'dict-stop':
                     if self.dictating:
+                        self.dict_released_at = value if isinstance(value, float) else time.perf_counter()
+                        log_timing('dict-release', previews=self.meta.get('previewUpdates', 0))
                         self.dictating = False
                         self.dict_state = 'processing'
                         self.dict_until = time.monotonic() + 12.0
@@ -1249,7 +1279,7 @@ class Engine:
                 self.settled_feed_run = ''
                 for message in messages:
                     self.last_run = message.run
-                    self.jobs.put_nowait((message, self.generation))   # waits behind a paused output while muted
+                    self.jobs.put_nowait((message, self.generation, time.perf_counter()))   # waits behind a paused output while muted
                 if self.agent.get('activity') == 'idle':
                     self.settled_feed_run = self.agent.get('run', '')
                 if self.mode == 'openwhispr' and self.openwhispr.available():
@@ -1295,6 +1325,11 @@ class Engine:
         # An earlier cleanup can finish during the next held recording. It is not this turn's end.
         if rows and not self.dictating and self.dict_state == 'processing':
             last = rows[-1]
+            if getattr(self, 'dict_released_at', None):
+                elapsed = (time.perf_counter() - self.dict_released_at) * 1000
+                self.meta['lastReleaseToRowMs'] = elapsed
+                log_timing('openwhispr-row', releaseToNoticeMs=elapsed, status=last['status'],
+                           words=len(last['text'].split()))
             if last['status'] == 'completed' and last['text']:
                 self.dict_state, self.dict_until = 'done', now + 0.9
                 self.dict_preview_text = last['text'][-1200:]
@@ -1733,6 +1768,7 @@ def make_transparent(window, engine):
 
 
 def main():
+    t3_voice_core.TIMING_LOG = ROOT / 't3-voice.out.log'   # hop timings, one JSON line each (never text)
     parser = argparse.ArgumentParser()
     parser.add_argument('--thread', default=None)
     args = parser.parse_args()

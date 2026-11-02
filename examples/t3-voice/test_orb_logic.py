@@ -50,7 +50,7 @@ class VisibilityTests(unittest.TestCase):
         session=preview.start()
         preview.push(b'a'*32000)
         request=preview.request(0)
-        with patch.object(t3_voice,'transcribe',return_value='Words still being spoken'), patch.object(t3_voice,'send_message') as send:
+        with patch.object(t3_voice,'transcribe_result',return_value={'text':'Words still being spoken','tokens':[],'timestamps':[]}), patch.object(t3_voice,'send_message') as send:
             e.preview_audio(*request)
             kind,value=e.notice.get_nowait()
             self.assertEqual('dict-preview',kind)
@@ -490,6 +490,73 @@ class PlaybackMeterTests(unittest.TestCase):
         self.assertLess(audio.level,peak)
         audio.reset()
         self.assertEqual(0,audio.level)
+
+
+class LatencyHopTests(unittest.TestCase):
+    """Release-to-draft plumbing: no second LLM pass, notices handled at once, timings recorded."""
+    def dictation(self, text, cleaned):
+        from t3_voice_core import DictationText
+        item = DictationText(text)
+        item.cleaned = cleaned
+        return item
+
+    def test_openwhispr_cleaned_dictation_skips_the_second_cleanup_pass(self):
+        e = engine(delivery='review', cleanup=True, routes=Mock(current=lambda t: True), notice=queue.Queue())
+        ticket = SimpleNamespace(thread='one')
+        with patch.object(t3_voice, 'cleanup_text', side_effect=AssertionError('second LLM pass')):
+            e._forward(self.dictation('Already clean.', True), ticket)
+        kind, value = e.notice.get_nowait()
+        self.assertEqual(('review', 'Already clean.'), (kind, value[0]))
+
+    def test_raw_dictation_still_gets_the_optional_cleanup(self):
+        e = engine(delivery='review', cleanup=True, routes=Mock(current=lambda t: True), notice=queue.Queue())
+        with patch.object(t3_voice, 'cleanup_text', return_value='Cleaned.') as clean:
+            e._forward(self.dictation('uh cleaned', False), SimpleNamespace(thread='one'))
+            clean.assert_called_once_with('uh cleaned')
+        self.assertEqual('Cleaned.', e.notice.get_nowait()[1][0])
+        self.assertIn('lastCleanupMs', e.meta)
+
+    def test_forwarded_thread_keeps_the_row_flag(self):
+        e = engine(review=None, openwhispr=Mock(poll=lambda: [self.dictation('Words.', True)]),
+                   routes=Mock(ticket=lambda: 'ticket'), stop=Mock(), mic_muted=False)
+        with patch.object(t3_voice.threading, 'Thread') as thread:
+            e.forward_openwhispr()
+        text, _ = thread.call_args.kwargs['args']
+        self.assertTrue(text.cleaned)
+
+    def test_loop_wakes_on_a_notice_instead_of_sleeping(self):
+        from t3_voice_core import WakeQueue
+        ticks = []
+        e = engine(notice=WakeQueue(), quit=threading.Event(), lock=threading.RLock(),
+                   update_ducking=Mock(), update_click_through=Mock())
+        def tick():
+            ticks.append(time.perf_counter())
+            if len(ticks) >= 3:
+                e.quit.set()
+            e.notice.put(('noop', None))     # as a transcript arriving while the tick runs
+        e.tick = tick
+        started = time.perf_counter()
+        e.loop()
+        self.assertLess(time.perf_counter() - started, .035)   # two 40 ms sleeps would take >= 80 ms
+
+    def test_release_and_row_notice_record_hop_timings(self):
+        e = engine(dictating=True, dict_state='dictating', dict_preview=t3_voice.DictationPreview(),
+                   update_mic=Mock(), meta={'previewUpdates': 0}, env_read_at=float('inf'), manage_pill=Mock(),
+                   dict_watch=Mock(poll=lambda: []))
+        released = time.perf_counter() - .5
+        e.notice = queue.Queue(); e.notice.put(('dict-stop', released))
+        e.dictation_tick = lambda: None
+        with patch.object(t3_voice.Engine, 'dictation_tick', lambda self: None):
+            try:
+                e.tick()
+            except Exception:
+                pass                                     # the rest of tick needs a full engine
+        self.assertEqual(released, e.dict_released_at)
+        self.assertEqual('processing', e.dict_state)
+        e.dict_watch = Mock(poll=lambda: [{'status': 'completed', 'text': 'Four words right here', 'error': ''}])
+        t3_voice.Engine.dictation_tick(e)
+        self.assertGreaterEqual(e.meta['lastReleaseToRowMs'], 500)
+        self.assertEqual('done', e.dict_state)
 
 
 if __name__ == '__main__':

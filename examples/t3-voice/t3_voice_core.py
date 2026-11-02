@@ -9,11 +9,84 @@ import os
 from pathlib import Path
 import re
 import struct
+import queue
 import subprocess
 import threading
+import time
 from urllib.parse import urlsplit, unquote
 
 from live_reader_core import MessageFeed, Message, clean_prose
+
+
+TIMING_LOG = None          # Path set by the orb; None keeps tests and tools silent
+_timing_lock = threading.Lock()
+
+
+def log_timing(event, **fields):
+    """One JSON line of hop timings (numbers and labels only, never transcript or reply text)."""
+    if TIMING_LOG is None:
+        return
+    record = {'ts': round(time.time(), 3), 'event': event}
+    record.update({key: round(value, 1) if isinstance(value, float) else value for key, value in fields.items()})
+    try:
+        with _timing_lock, open(TIMING_LOG, 'a', encoding='utf-8') as out:
+            out.write(json.dumps(record) + '\n')
+    except OSError:
+        pass
+
+
+class WakeQueue(queue.Queue):
+    """Notice queue whose put wakes the engine loop at once instead of after its 40 ms sleep.
+    `quiet` kinds (periodic background reports) wait for the next regular tick."""
+    def __init__(self, quiet=()):
+        super().__init__()
+        self.wake = threading.Event()
+        self.quiet = frozenset(quiet)
+
+    def put(self, item, block=True, timeout=None):
+        super().put(item, block, timeout)
+        if not (isinstance(item, tuple) and item and item[0] in self.quiet):
+            self.wake.set()
+
+
+class ChangeGate:
+    """Has another process committed to this SQLite file since the last look? Answered from the size and
+    mtime of the database and its WAL plus the header change counter, so polling never holds the file open
+    and an idle poll costs ~0.1 ms instead of a ~2.5 ms connection. A full poll still runs every `refresh` s."""
+    def __init__(self, path, refresh=.5, clock=time.monotonic):
+        self.path = Path(path)
+        self.refresh = refresh
+        self.clock = clock
+        self.signature = None
+        self.next_full = float('-inf')
+
+    def _signature(self):
+        parts = []
+        for name in (str(self.path), str(self.path) + '-wal'):
+            try:
+                stat = os.stat(name)
+                parts += [stat.st_size, stat.st_mtime_ns]
+            except OSError:
+                parts += [None, None]
+        try:
+            with open(self.path, 'rb') as handle:
+                parts.append(handle.read(28)[24:28])   # file change counter (rollback-journal commits)
+        except OSError:
+            parts.append(None)
+        return tuple(parts)
+
+    def changed(self):
+        signature, now = self._signature(), self.clock()
+        if signature != self.signature or now >= self.next_full:
+            self.signature, self.next_full = signature, now + self.refresh
+            return True
+        return False
+
+
+class DictationText(str):
+    """A completed OpenWhispr dictation. `cleaned`: OpenWhispr's own cleanup already rewrote it."""
+    cleaned = False
+    row_id = 0
 
 
 @lru_cache(maxsize=8)
@@ -225,18 +298,43 @@ class VoiceFx:
         return out.astype(np.float32)
 
 
+def _norm_words(text):
+    return re.findall(r"[a-z0-9']+", text.casefold())
+
+
+def _continue_case(text, before):
+    """A window decoded mid-sentence starts with a capital; lower an ordinary capitalised word there."""
+    match = re.match(r"([A-Z])([a-z]+(?:'[a-z]+)?)\b", text)
+    if not before or before.rstrip().endswith(('.', '!', '?')) or not match or match.group(0).startswith("I'"):
+        return text
+    return match.group(1).lower() + text[1:]
+
+
 class DictationPreview:
-    """Bounded, display-only audio snapshots. Release never waits for a preview job."""
-    def __init__(self, sample_rate=16000, interval=1.1, window_seconds=6, min_seconds=.65):
+    """Bounded, display-only audio snapshots. Release never waits for a preview job.
+
+    Each request decodes only the audio after the last committed word. Once a decoded window is longer
+    than `commit_after` seconds, the words that started more than `keep` seconds before its end become
+    committed text and their audio is dropped, so a long hold costs a ~3 s decode per update instead of
+    re-decoding the whole buffer, and the bubble shows the whole utterance rather than its last seconds.
+    `window_seconds` remains a hard cap on buffered audio (used only if results stop arriving)."""
+    def __init__(self, sample_rate=16000, interval=.8, window_seconds=8, min_seconds=.65,
+                 commit_after=3.0, keep=1.5, pad=.5, tolerance=.3):
         self.lock = threading.Lock()
+        self.rate = sample_rate
         self.limit = int(sample_rate * window_seconds) * 2
         self.minimum = int(sample_rate * min_seconds) * 2
         self.voice_minimum = max(2, int(sample_rate * .1) * 2)
         self.interval = interval
+        self.commit_after, self.keep, self.pad, self.tolerance = commit_after, keep, pad, tolerance
+        self.cut = None             # seconds into the hold where committed text ends
         self.session = 0
         self.active = False
         self.inflight = None
+        self.sent = None            # (absolute byte offset, length) of the request in flight
         self.audio = bytearray()
+        self.base = 0               # absolute byte offset of audio[0] within this hold
+        self.committed = ''
         self.new_voice = 0
         self.last_request = float('-inf')
 
@@ -245,7 +343,11 @@ class DictationPreview:
             self.session += 1
             self.active = True
             self.inflight = None    # a request from the previous hold must not block this one
+            self.sent = None
             self.audio.clear()
+            self.base = 0
+            self.committed = ''
+            self.cut = None
             self.new_voice = 0
             self.last_request = float('-inf')
             return self.session
@@ -262,7 +364,9 @@ class DictationPreview:
                 return
             self.audio.extend(pcm)
             if len(self.audio) > self.limit:
-                del self.audio[:-self.limit]
+                dropped = len(self.audio) - self.limit
+                del self.audio[:dropped]
+                self.base += dropped
             if voiced:
                 self.new_voice += len(pcm)
 
@@ -272,18 +376,53 @@ class DictationPreview:
                     or self.new_voice < self.voice_minimum or now < self.last_request + self.interval):
                 return None
             self.inflight = self.session
+            self.sent = (self.base, len(self.audio))
             self.last_request = now
             self.new_voice = 0
             return self.session, bytes(self.audio)
 
-    def complete(self, session, text):
+    def complete(self, session, text, tokens=None, timestamps=None):
+        """Display text for this hold (committed words + this window), or None for a stale/empty result."""
         with self.lock:
             if self.inflight != session:
                 return None
             self.inflight = None
-            if self.active and session == self.session and text.strip():
-                return text.strip()
-            return None
+            sent, self.sent = self.sent, None
+            if not self.active or session != self.session:
+                return None
+            window = (text or '').strip()
+            if sent and tokens and timestamps and len(tokens) == len(timestamps):
+                start, length = sent
+                offset = start / 2 / self.rate                       # window start, seconds into the hold
+                stamps = [offset + float(t) for t in timestamps]
+                words = [i for i, token in enumerate(tokens) if token.startswith(' ') or i == 0]
+                # Audio before the committed boundary was decoded (with more context) last time: skip words
+                # clearly before it, then any repeat of the committed tail (timestamps jitter by ~0.2 s).
+                first = next((i for i in words if self.cut is None or stamps[i] >= self.cut - self.tolerance), len(tokens))
+                if self.cut is not None:
+                    tail = _norm_words(self.committed)[-3:]
+                    later = [i for i in words if i >= first]
+                    for count in range(min(3, len(later)), 0, -1):
+                        end_index = later[count] if count < len(later) else len(tokens)
+                        if _norm_words(''.join(tokens[first:end_index])) == tail[-count:]:
+                            first = end_index
+                            break
+                window = _continue_case(''.join(tokens[first:]).strip(), self.committed)
+                if length / 2 / self.rate > self.commit_after:
+                    end = offset + length / 2 / self.rate
+                    index = max((i for i in words if i > first and stamps[i] <= end - self.keep), default=0)
+                    if index:
+                        chunk = _continue_case(''.join(tokens[first:index]).strip(), self.committed)
+                        self.committed = (self.committed + ' ' + chunk).strip()
+                        window = _continue_case(''.join(tokens[index:]).strip(), self.committed)
+                        self.cut = stamps[index]
+                        # Keep `pad` seconds before the boundary word: its onset precedes its timestamp.
+                        boundary = int(max(0.0, self.cut - self.pad) * self.rate) * 2
+                        if boundary > self.base:
+                            del self.audio[:boundary - self.base]
+                            self.base = boundary
+            shown = (self.committed + ' ' + window).strip()
+            return shown or None
 
 
 def parse_thread_url(url, environment):
@@ -348,12 +487,15 @@ class StreamingFeed(MessageFeed):
     def __init__(self, path, thread):
         self.prefixes = {}
         self.runs = set()
+        self.gate = ChangeGate(path)
         super().__init__(path, thread)
 
     def suppress_current(self):
         self.suppressed.update(self.runs)
 
     def poll(self):
+        if not self.gate.changed():
+            return []   # no commit since the last poll: same rows, same (or fewer) results
         with closing(self.connect()) as db:
             rows = db.execute('SELECT rowid,message_id,run_id,role,streaming,payload_json '
                               'FROM orchestration_v2_projection_messages WHERE thread_id=? AND rowid>? '
@@ -545,6 +687,8 @@ class OpenWhisprFeed:
     def __init__(self, path=None):
         self.path = Path(path) if path else Path(os.environ.get('APPDATA', '')) / 'OpenWhisprDictation/transcriptions.db'
         self.cursor = None
+        self.gate = ChangeGate(self.path)
+        self.has_raw = None
 
     def connect(self):
         import sqlite3
@@ -561,14 +705,27 @@ class OpenWhisprFeed:
 
     def poll(self):
         if self.cursor is None:
+            self.gate.changed()
             self.discard_pending()
             return []
+        if not self.gate.changed():
+            return []
         with closing(self.connect()) as db:
-            rows = db.execute("SELECT id,text FROM transcriptions WHERE id>? AND status='completed' "
-                              "AND deleted_at IS NULL ORDER BY id LIMIT 20", (self.cursor,)).fetchall()
+            if self.has_raw is None:
+                self.has_raw = any(row[1] == 'raw_text' for row in db.execute('PRAGMA table_info(transcriptions)'))
+            rows = db.execute("SELECT id,text,%s FROM transcriptions WHERE id>? AND status='completed' "
+                              "AND deleted_at IS NULL ORDER BY id LIMIT 20" % ('raw_text' if self.has_raw else 'NULL'),
+                              (self.cursor,)).fetchall()
             latest = db.execute('SELECT COALESCE(MAX(id),0) FROM transcriptions').fetchone()[0]
         self.cursor = max(self.cursor, latest)
-        return [text.strip() for _, text in rows if isinstance(text, str) and text.strip()]
+        result = []
+        for row_id, text, raw in rows:
+            if isinstance(text, str) and text.strip():
+                item = DictationText(text.strip())
+                item.row_id = row_id
+                item.cleaned = isinstance(raw, str) and raw.strip() != item
+                result.append(item)
+        return result
 
 
 VIRTUAL_KEYS = {
@@ -622,6 +779,8 @@ class DictationWatch:
     def poll(self):
         feed = self.feed
         if not feed.available():
+            return []
+        if feed.cursor is not None and not feed.gate.changed():
             return []
         with closing(feed.connect()) as db:
             if feed.cursor is None:
@@ -753,6 +912,11 @@ def cleanup_text(text, port=8221, timeout=6):
 
 def transcribe(pcm, sample_rate=16000, timeout=25):
     """Existing sherpa offline WebSocket protocol; all audio remains on loopback."""
+    return transcribe_result(pcm, sample_rate, timeout)['text']
+
+
+def transcribe_result(pcm, sample_rate=16000, timeout=25):
+    """Text plus sherpa's per-token start times (seconds into the clip), for preview stitching."""
     import numpy as np
     import websocket
     samples = (np.frombuffer(pcm, dtype='<i2').astype('<f4') / 32768).tobytes()
@@ -767,6 +931,9 @@ def transcribe(pcm, sample_rate=16000, timeout=25):
         text = result.get('text', '')
         if not isinstance(text, str):
             raise ValueError('Unexpected local transcription result.')
-        return text.strip()
+        tokens, stamps = result.get('tokens'), result.get('timestamps')
+        valid = (isinstance(tokens, list) and isinstance(stamps, list) and len(tokens) == len(stamps)
+                 and all(isinstance(t, str) for t in tokens) and all(isinstance(s, (int, float)) for s in stamps))
+        return {'text': text.strip(), 'tokens': tokens if valid else [], 'timestamps': stamps if valid else []}
     finally:
         socket.close()

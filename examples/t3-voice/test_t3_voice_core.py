@@ -538,3 +538,167 @@ class CinematicVoiceFxTests(unittest.TestCase):
         np.testing.assert_allclose(whole, np.concatenate(parts), atol=1e-5)
         fx.reset()
         np.testing.assert_allclose(whole, fx.process(x), atol=1e-6)
+
+
+class LatencyPlumbingTests(unittest.TestCase):
+    """Cheap change detection, preview stitching and the OpenWhispr cleanup flag (latency workstream)."""
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(dir=Path(__file__).parent / 'runtime')
+        self.addCleanup(self.tmp.cleanup)
+
+    def wal_db(self, schema):
+        import sqlite3
+        path = Path(self.tmp.name) / 'gate.db'
+        db = sqlite3.connect(path)
+        db.execute('PRAGMA journal_mode=WAL')
+        db.execute(schema); db.commit()
+        self.addCleanup(db.close)
+        return path, db
+
+    def test_change_gate_sees_every_commit_and_forces_a_periodic_poll(self):
+        from t3_voice_core import ChangeGate
+        path, db = self.wal_db('CREATE TABLE t (x)')
+        now = [0.0]
+        gate = ChangeGate(path, refresh=.5, clock=lambda: now[0])
+        self.assertTrue(gate.changed())          # first look always polls
+        self.assertFalse(gate.changed())
+        for value in range(5):
+            db.execute('INSERT INTO t VALUES (?)', (value,)); db.commit()
+            self.assertTrue(gate.changed())
+            self.assertFalse(gate.changed())
+        db.execute('PRAGMA wal_checkpoint(TRUNCATE)')
+        db.execute('INSERT INTO t VALUES (9)'); db.commit()
+        self.assertTrue(gate.changed())
+        now[0] = .6                                # safety net: a full poll at least every `refresh`
+        self.assertTrue(gate.changed())
+        self.assertFalse(gate.changed())
+
+    def test_change_gate_tolerates_a_missing_database(self):
+        from t3_voice_core import ChangeGate
+        gate = ChangeGate(Path(self.tmp.name) / 'absent.db', clock=lambda: 0.0)
+        self.assertTrue(gate.changed())
+        self.assertFalse(gate.changed())
+
+    def test_idle_feed_poll_does_not_open_the_database(self):
+        path, db = self.wal_db("CREATE TABLE transcriptions (id INTEGER PRIMARY KEY AUTOINCREMENT, text TEXT NOT NULL, "
+                               "raw_text TEXT, status TEXT NOT NULL DEFAULT 'completed', deleted_at TEXT)")
+        feed = OpenWhisprFeed(path)
+        feed.poll(); feed.poll()
+        with patch.object(feed, 'connect', side_effect=AssertionError('opened while idle')):
+            self.assertEqual([], feed.poll())
+        db.execute("INSERT INTO transcriptions (text, raw_text) VALUES ('Hello, Maeve.', 'hello maeve')"); db.commit()
+        self.assertEqual(['Hello, Maeve.'], feed.poll())
+
+    def test_openwhispr_rows_report_whether_openwhispr_already_cleaned_them(self):
+        path, db = self.wal_db("CREATE TABLE transcriptions (id INTEGER PRIMARY KEY AUTOINCREMENT, text TEXT NOT NULL, "
+                               "raw_text TEXT, status TEXT NOT NULL DEFAULT 'completed', deleted_at TEXT)")
+        feed = OpenWhisprFeed(path)
+        self.assertEqual([], feed.poll())
+        db.execute("INSERT INTO transcriptions (text, raw_text) VALUES ('Fix the build.', 'uh fix the the build')")
+        db.execute("INSERT INTO transcriptions (text, raw_text) VALUES (' Same words. ', 'Same words.')")
+        db.execute("INSERT INTO transcriptions (text) VALUES ('No raw copy.')"); db.commit()
+        rows = feed.poll()
+        self.assertEqual(['Fix the build.', 'Same words.', 'No raw copy.'], rows)
+        self.assertEqual([True, False, False], [row.cleaned for row in rows])
+        self.assertTrue(all(row.row_id for row in rows))
+
+    def test_idle_streaming_feed_does_not_open_the_database(self):
+        import sqlite3
+        path = Path(self.tmp.name) / 'state.sqlite'
+        db = sqlite3.connect(path); self.addCleanup(db.close)
+        db.execute('CREATE TABLE orchestration_v2_projection_messages (message_id TEXT PRIMARY KEY,thread_id TEXT,'
+                   'run_id TEXT,role TEXT,streaming INTEGER,created_at TEXT,updated_at TEXT,payload_json TEXT)'); db.commit()
+        feed = StreamingFeed(path, 'chosen')
+        feed.poll()
+        with patch.object(feed, 'connect', side_effect=AssertionError('opened while idle')):
+            self.assertEqual([], feed.poll())
+
+    def preview(self):
+        from t3_voice_core import DictationPreview
+        return DictationPreview(sample_rate=100, interval=0, window_seconds=20, min_seconds=.1,
+                                commit_after=3.0, keep=1.5, pad=.5, tolerance=.3)
+
+    def test_long_hold_commits_early_words_and_decodes_only_the_tail(self):
+        preview = self.preview()
+        session = preview.start()
+        preview.push(b'a' * 800, voiced=True)                      # 4 s at 100 Hz
+        preview.request(0)
+        tokens = [' Please', ' keep', ' the', ' orb', ' fast']
+        stamps = [0.2, 0.9, 1.6, 2.4, 3.1]
+        self.assertEqual('Please keep the orb fast', preview.complete(session, 'Please keep the orb fast', tokens, stamps))
+        # Words that started before 4 - 1.5 = 2.5 s end the committed text at the newest of them (' orb', 2.4 s);
+        # the audio before 2.4 - 0.5 s is dropped, so the next request decodes only the tail.
+        self.assertEqual('Please keep the', preview.committed)
+        self.assertEqual(int(1.9 * 100) * 2, preview.base)
+        preview.push(b'b' * 200, voiced=True)
+        _, audio = preview.request(1)
+        self.assertEqual(800 + 200 - preview.base, len(audio))
+        # The new window starts at 1.9 s: it decodes 'the' again (a repeat of the committed tail), then continues.
+        shown = preview.complete(session, 'The orb fast and calm', [' The', ' orb', ' fast', ' and', ' calm'],
+                                 [0.1, 0.55, 1.2, 2.0, 2.6])
+        self.assertEqual('Please keep the orb fast and calm', shown)
+
+    def test_stitching_never_shows_text_from_a_previous_hold(self):
+        preview = self.preview()
+        old = preview.start()
+        preview.push(b'a' * 800, voiced=True)
+        preview.request(0)
+        new = preview.start()
+        self.assertIsNone(preview.complete(old, 'old words', [' old', ' words'], [0.5, 2.0]))
+        self.assertEqual('', preview.committed)
+        preview.push(b'b' * 80, voiced=True)
+        preview.request(0)
+        self.assertEqual('Fresh', preview.complete(new, 'Fresh', [' Fresh'], [0.1]))
+
+    def test_window_continuing_a_sentence_drops_the_decoder_capital(self):
+        from t3_voice_core import _continue_case
+        self.assertEqual('library and more', _continue_case('Library and more', 'use our asset'))
+        self.assertEqual('Library and more', _continue_case('Library and more', 'A full stop.'))
+        self.assertEqual("I'm here", _continue_case("I'm here", 'and then'))
+        self.assertEqual('GPU time', _continue_case('GPU time', 'the'))
+        self.assertEqual('Words', _continue_case('Words', ''))
+
+    def test_transcribe_result_keeps_token_times_and_rejects_malformed_ones(self):
+        import sys
+        import types
+        import t3_voice_core
+        replies = [json.dumps({'text': ' Hi there ', 'tokens': [' Hi', ' there'], 'timestamps': [0.1, 0.4]}),
+                   json.dumps({'text': 'x', 'tokens': [' x'], 'timestamps': []})]
+
+        class Socket:
+            def send_binary(self, data): pass
+            def recv(self): return replies.pop(0)
+            def send(self, data): pass
+            def close(self): pass
+        fake = types.SimpleNamespace(create_connection=lambda *a, **k: Socket())
+        with patch.dict(sys.modules, {'websocket': fake}):
+            self.assertEqual({'text': 'Hi there', 'tokens': [' Hi', ' there'], 'timestamps': [0.1, 0.4]},
+                             t3_voice_core.transcribe_result(bytes(64)))
+            self.assertEqual({'text': 'x', 'tokens': [], 'timestamps': []}, t3_voice_core.transcribe_result(bytes(64)))
+
+    def test_wake_queue_wakes_the_loop_on_every_notice(self):
+        from t3_voice_core import WakeQueue
+        notices = WakeQueue()
+        self.assertFalse(notices.wake.is_set())
+        notices.put_nowait(('dict-stop', 1.0))
+        self.assertTrue(notices.wake.is_set())
+        self.assertEqual(('dict-stop', 1.0), notices.get_nowait())
+        background = WakeQueue(quiet=('active-thread',))
+        background.put(('active-thread', None))
+        self.assertFalse(background.wake.is_set())
+        self.assertEqual(1, background.qsize())
+        background.put(('review', None))
+        self.assertTrue(background.wake.is_set())
+
+    def test_timing_log_is_silent_without_a_path_and_never_raises(self):
+        import t3_voice_core
+        path = Path(self.tmp.name) / 'timing.log'
+        with patch.object(t3_voice_core, 'TIMING_LOG', None):
+            t3_voice_core.log_timing('nothing', ms=1.0)
+        self.assertFalse(path.exists())
+        with patch.object(t3_voice_core, 'TIMING_LOG', path):
+            t3_voice_core.log_timing('review-shown', rowToReviewMs=12.345, words=3)
+        record = json.loads(path.read_text('utf-8'))
+        self.assertEqual(('review-shown', 12.3, 3), (record['event'], record['rowToReviewMs'], record['words']))
+        with patch.object(t3_voice_core, 'TIMING_LOG', Path(self.tmp.name) / 'missing-dir' / 'x.log'):
+            t3_voice_core.log_timing('ignored')

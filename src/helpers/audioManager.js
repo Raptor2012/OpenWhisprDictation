@@ -32,6 +32,7 @@ import {
 } from "./preparedMicCapture";
 import { MicStreamHold } from "./micStreamHold";
 import { PcmTap } from "./pcmTap";
+import { fastCleanup, isFastCleanupEligible } from "../utils/fastCleanup";
 import { ActiveMicRecoveryController } from "./activeMicRecovery";
 import { followsSystemDefaultMic } from "./micSelectionRecovery";
 import { isCacheableMicrophoneResolution, resolvePreferredMicrophone } from "./microphoneSelection";
@@ -3759,6 +3760,16 @@ registerProcessor("pcm-streaming-processor", PCMStreamingProcessor);
             if (!customPrompt) assertValidCleanupOutput(processedText, reasonResult.text);
             processedText = reasonResult.text;
           }
+        } else if (
+          route.kind === "cleanup" &&
+          !toneStyle &&
+          selectResolvedLLMConfig(settings, "dictationCleanup").provider === "local" &&
+          isFastCleanupEligible(processedText)
+        ) {
+          // Short plain dictation on the local model: deterministic cleanup instead of a round trip.
+          const fast = fastCleanup(processedText);
+          logger.debug("Fast cleanup used", { chars: processedText.length }, "performance");
+          if (hasTextContent(fast)) processedText = fast;
         } else if (route.kind === "cleanup") {
           const effectiveModel = getEffectiveCleanupModel();
           if (effectiveModel) {

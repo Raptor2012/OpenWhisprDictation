@@ -3,8 +3,8 @@
 A local-only Windows dictation app derived from [OpenWhispr](https://github.com/OpenWhispr/openwhispr), with **Maeve**, a voice orb that reads your coding agent's replies aloud. Hold a key, speak, and clean text appears at your cursor. Speech recognition, cleanup and voice all run on your own computer: no cloud, no telemetry.
 
 <p align="center">
-  <a href="docs/media/openwhispr-dictation-demo.mp4"><img src="docs/media/demo-poster.jpg" alt="Watch the 90-second demo" width="860" /></a><br/>
-  <sub>Click the image for the 90-second demo (MP4, narrated by Maeve).</sub>
+  <a href="docs/media/openwhispr-dictation-demo.mp4"><img src="docs/media/demo-preview.webp" alt="OpenWhispr Dictation demo preview" width="860" /></a><br/>
+  <sub>Silent preview. Click it for the full 86-second demo, narrated by Maeve.</sub>
 </p>
 
 ## How it works

@@ -4,7 +4,7 @@ A local-only Windows dictation app derived from [OpenWhispr](https://github.com/
 
 <p align="center">
   <a href="docs/media/openwhispr-dictation-demo.mp4"><img src="docs/media/demo-preview.webp" alt="OpenWhispr Dictation demo preview" width="860" /></a><br/>
-  <sub>Silent preview. Click it for the full demo (1:26), narrated by Maeve.</sub>
+  <sub>Silent preview. Click it for the full demo (1:28), narrated by Maeve.</sub>
 </p>
 
 ## How it works

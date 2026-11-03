@@ -1,3 +1,56 @@
+# OpenWhispr Dictation
+
+A local-only Windows dictation app derived from [OpenWhispr](https://github.com/OpenWhispr/openwhispr), with **Maeve**, a voice orb that reads your coding agent's replies aloud. Hold a key, speak, and clean text appears at your cursor. Speech recognition, cleanup and voice all run on your own computer: no cloud, no telemetry.
+
+<p align="center">
+  <a href="docs/media/openwhispr-dictation-demo.mp4"><img src="docs/media/demo-poster.jpg" alt="Watch the 90-second demo" width="860" /></a><br/>
+  <sub>Click the image for the 90-second demo (MP4, narrated by Maeve).</sub>
+</p>
+
+## How it works
+
+| Step | What runs | Where |
+| --- | --- | --- |
+| Hold the hotkey and speak | Parakeet unified 0.6B (int8) through sherpa-onnx, with a live preview | CPU, 8 threads |
+| Release | Gemma 4 E4B cleanup through llama.cpp; short, simple lines use instant rule-based cleanup instead | GPU (Vulkan) |
+| Paste | Text goes only into a verified writable field, otherwise to the clipboard | — |
+| Maeve (optional) | Sends the dictation to a T3 Code thread and reads the reply with Phonon 31M TTS | CPU |
+
+What changed versus upstream OpenWhispr is listed in [docs/windows-dictation-README.md](docs/windows-dictation-README.md). Maeve lives in [examples/t3-voice](examples/t3-voice/README.md). To start Maeve whenever the app opens, set `OPENWHISPR_COMPANION_COMMAND` to her launcher (`Start Maeve T3 Voice.cmd`).
+
+## Benchmarks
+
+Measured on 402 of the author's own dictations. Cleanup was scored against 137 hand-cleaned lines.
+
+| Measure | Before | After |
+| --- | --- | --- |
+| Cleanup score vs. hand-cleaned text | 85.5 | 92.6 |
+| Dictation → Maeve hand-off | 0.35–1.1 s | ~30 ms |
+| Maeve's first audio | — | 55–90 ms |
+| Key release → finished text | — | 1.6–2.6 s |
+
+**Test machine:** Acer Predator Helios Neo 16 (PHN16-72) laptop, Intel Core i9-14900HX (24 cores, 32 threads), NVIDIA GeForce RTX 4070 Laptop GPU (8 GB), 32 GB RAM, Windows 11. Speech recognition ran on the CPU with 8 threads, cleanup on the GPU through Vulkan, and Maeve's voice on the CPU. Expect slower times on lighter hardware, especially without a GPU for cleanup. The cleanup list was tuned on the same dictations it is scored on, so treat 92.6 as optimistic.
+
+## Build (Windows)
+
+Use Node 24, then:
+
+```powershell
+npm ci
+npm run build:renderer
+npx electron-builder --win --dir --config electron-builder.unsigned-win.json --publish never
+```
+
+The unpacked app lands in `dist/win-unpacked/`. Native helpers and model runtimes are downloaded by the `scripts/download-*` scripts; see [docs/windows-dictation-README.md](docs/windows-dictation-README.md) for launch, rollback and known limitations.
+
+## License and credits
+
+MIT, like upstream (see [LICENSE](LICENSE)). Built on [OpenWhispr](https://github.com/OpenWhispr/openwhispr) by the OpenWhispr team; speech by [NVIDIA Parakeet](https://huggingface.co/nvidia) via [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx), cleanup by Google's Gemma through [llama.cpp](https://github.com/ggml-org/llama.cpp), and Maeve's voice by Gradium's Phonon. This project is not affiliated with or endorsed by OpenWhispr.
+
+The original OpenWhispr README follows.
+
+---
+
 <p align="center">
   <img src="src/assets/logo.svg" alt="OpenWhispr" width="120" />
 </p>

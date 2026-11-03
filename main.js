@@ -295,6 +295,7 @@ const DiarizationManager = require("./src/helpers/diarization");
 const TrayManager = require("./src/helpers/tray");
 const dockManager = require("./src/helpers/dockManager");
 const autoStart = require("./src/helpers/autoStart");
+const { launchCompanion } = require("./src/helpers/companionLauncher");
 const IPCHandlers = require("./src/helpers/ipcHandlers");
 const CliBridge = require("./src/helpers/cliBridge");
 const UpdateManager = require("./src/updater");
@@ -2005,6 +2006,7 @@ ipcMain.on("limit-reached", (_event, data) => {
 if (gotSingleInstanceLock) {
   app.on("second-instance", async (_event, commandLine) => {
     await app.whenReady();
+    launchCompanion();
     if (!windowManager) {
       return;
     }
@@ -2070,6 +2072,8 @@ if (gotSingleInstanceLock) {
             });
         });
       }
+
+      launchCompanion();
 
       startApp().catch((error) => {
         console.error("Failed to start app:", error);

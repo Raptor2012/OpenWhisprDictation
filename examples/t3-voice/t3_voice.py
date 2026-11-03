@@ -45,6 +45,7 @@ BAR, BAR_BUBBLE, BAR_CARD = (200, 48), (340, 214), (320, 270)   # toolbar mode
 OPENWHISPR_ENV = Path(os.environ.get('APPDATA', '')) / 'OpenWhisprDictation/.env'
 LINGER = 1.2        # seconds the orb stays after the last reason to show it
 FADE = 0.5          # seconds for the exit animation before the window is hidden
+REGLAZE_EVERY = 5.0 # seconds between re-applying the transparent DWM glass while the orb is visible
 BUBBLE_FADE = 0.35  # keep native bounds while the page finishes its 180 ms bubble exit
 
 # A private handle: setting argtypes on ctypes.windll.user32 would change pywebview's own calls (drag).
@@ -242,6 +243,8 @@ class Engine:
         self.outside_since = None
         self.window = None
         self.hwnd = None
+        self.reglaze = None   # re-applies the DWM glass; Windows can drop it (login, display or theme changes)
+        self.reglazed_at = 0.0
         self.size = COMPACT
         self.viewport_target = SURFACE
         self.native_placement = None
@@ -1489,6 +1492,9 @@ class Engine:
         if visible:
             self.hide_at = None
             self.place(self.target_size())
+            if self.reglaze and (not self.visible or now - self.reglazed_at > REGLAZE_EVERY):
+                self.reglazed_at = now
+                self.reglaze()
             if not self.visible:
                 user32.SetWindowPos(self.hwnd, HWND_TOPMOST, 0, 0, 0, 0,
                                     SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE | SWP_ASYNC)
@@ -1751,19 +1757,43 @@ def make_transparent(window, engine):
     from System.Windows.Forms import MethodInvoker
     form = window.native
 
+    def glaze():
+        """Idempotent. Windows can reset these after start-up (seen right after login, when the window
+        turned solid #202020 grey), so this also runs on every show and on display/theme/power changes."""
+        try:
+            form.BackColor = Color.Black
+            hwnd = form.Handle.ToInt32()
+            none = ctypes.c_int(1)  # DWMSBT_NONE
+            ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, 38, ctypes.byref(none), 4)
+            no_border = ctypes.c_uint(0xFFFFFFFE)  # DWMWA_COLOR_NONE: no Windows 11 1 px frame border
+            ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, 34, ctypes.byref(no_border), 4)
+            # Layered (fully opaque alpha) so WS_EX_TRANSPARENT can make empty space click-through.
+            user32.SetWindowLongW(hwnd, -20, user32.GetWindowLongW(hwnd, -20) | 0x00080000)
+            user32.SetLayeredWindowAttributes(hwnd, 0, 255, 2)
+            margins = MARGINS(-1, -1, -1, -1)
+            ctypes.windll.dwmapi.DwmExtendFrameIntoClientArea(hwnd, ctypes.byref(margins))
+        except Exception:
+            pass  # the form is closing
+
+    def reglaze(*_):
+        try:
+            if not form.IsDisposed:
+                form.BeginInvoke(MethodInvoker(glaze))
+        except Exception:
+            pass
+
     def apply():
-        form.BackColor = Color.Black
-        hwnd = form.Handle.ToInt32()
-        none = ctypes.c_int(1)  # DWMSBT_NONE
-        ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, 38, ctypes.byref(none), 4)
-        no_border = ctypes.c_uint(0xFFFFFFFE)  # DWMWA_COLOR_NONE: no Windows 11 1 px frame border
-        ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, 34, ctypes.byref(no_border), 4)
-        # Layered (fully opaque alpha) so WS_EX_TRANSPARENT can make empty space click-through.
-        user32.SetWindowLongW(hwnd, -20, user32.GetWindowLongW(hwnd, -20) | 0x00080000)
-        user32.SetLayeredWindowAttributes(hwnd, 0, 255, 2)
-        margins = MARGINS(-1, -1, -1, -1)
-        ctypes.windll.dwmapi.DwmExtendFrameIntoClientArea(hwnd, ctypes.byref(margins))
-        engine.attach(hwnd)
+        glaze()
+        engine.reglaze = reglaze
+        engine.attach(form.Handle.ToInt32())
+        try:
+            from Microsoft.Win32 import SystemEvents
+            SystemEvents.DisplaySettingsChanged += reglaze
+            SystemEvents.UserPreferenceChanged += reglaze
+            SystemEvents.PowerModeChanged += reglaze
+            SystemEvents.SessionSwitch += reglaze
+        except Exception:
+            pass  # the periodic re-apply in the tick loop still covers it
     form.BeginInvoke(MethodInvoker(apply))
 
 

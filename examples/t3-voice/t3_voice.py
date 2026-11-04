@@ -28,6 +28,7 @@ import webrtcvad
 import webview
 
 from audio_duck import AudioDucker
+from audio_route import EndpointWatch
 from diagnostics import write_status
 from live_reader import ContinuousAudio
 from live_reader_core import Message
@@ -316,6 +317,8 @@ class Engine:
             self.select(initial, automatic=True)
         # Other apps' audio drops to 10% while Maeve speaks or the user holds dictation.
         self.ducker = AudioDucker(ROOT / 't3-voice-duck.json').start()
+        # Headphones, Bluetooth or a USB mic plugged in or out: move Maeve and the mic to match.
+        self.endpoints = EndpointWatch(self.reroute).start()
         threading.Thread(target=self.synthesize, daemon=True).start()
         threading.Thread(target=self.hotkey, daemon=True).start()
         threading.Thread(target=self.loop, daemon=True).start()
@@ -660,8 +663,33 @@ class Engine:
         except Exception:
             return None
 
+    def reroute(self):
+        """Windows' devices changed: refresh PortAudio's snapshot and reopen both streams on the right device."""
+        with self.lock:
+            started = time.perf_counter()
+            mic_open = self.mic_stream is not None
+            if mic_open:
+                self.mic_stream.abort()
+                self.mic_stream.close()
+                self.mic_stream = None
+            if self.audio is not None:
+                self.audio.close_stream()
+            sd._terminate()                 # PortAudio only enumerates devices at initialisation
+            sd._initialize()
+            if self.audio is not None:
+                try:
+                    self.audio.open_stream(self.device_index('output'))
+                except Exception as exc:
+                    self.meta['speakerError'] = type(exc).__name__
+                    self.audio.open_stream(None)
+            if mic_open:
+                self.update_mic()
+            self.meta['audioReroutes'] = self.meta.get('audioReroutes', 0) + 1
+            self.meta['audioRerouteMs'] = round((time.perf_counter() - started) * 1000, 1)
+
     def audio_devices(self):
-        devices, hostapis = sd.query_devices(), sd.query_hostapis()
+        with self.lock:
+            devices, hostapis = sd.query_devices(), sd.query_hostapis()
         listed = lambda kind: [{'name': n, 'label': l} for n, l in audio_device_choices(devices, hostapis, kind)]
         return {'inputs': listed('input'), 'outputs': listed('output'),
                 'mic': self.mic_device, 'speaker': self.speaker_device}
@@ -989,11 +1017,12 @@ class Engine:
             with tts.stream('Ready.', voice='Maeve') as warmup:
                 for _ in warmup:
                     pass
-            try:
-                self.audio = ContinuousAudio(device=self.device_index('output'))
+            with self.lock:                         # not while reroute() has PortAudio torn down
+                try:
+                    self.audio = ContinuousAudio(device=self.device_index('output'))
+                except Exception:
+                    self.audio = ContinuousAudio()  # saved speaker unavailable: use the system default
                 self.audio.paused = self.maeve_muted
-            except Exception:
-                self.audio = ContinuousAudio()      # saved speaker unavailable: use the system default
             self.notice.put(('ready', None))
             while not self.quit.is_set():
                 try:
@@ -1642,6 +1671,8 @@ class Engine:
         for hwnd in self.pill_hwnds:
             if user32.IsWindow(hwnd):
                 set_hidden_region(hwnd, False)
+        if getattr(self, 'endpoints', None):
+            self.endpoints.stop()
         self.stop()
         if self.mic_stream:
             self.mic_stream.abort()

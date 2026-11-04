@@ -641,6 +641,48 @@ class DeviceSwitchTests(unittest.TestCase):
         e.prefs.set.assert_called_with('micDevice', '')
 
 
+    def test_reroute_refreshes_portaudio_between_closing_and_reopening(self):
+        order = []
+        audio, mic = Mock(), Mock()
+        audio.close_stream.side_effect = lambda: order.append('close-out')
+        audio.open_stream.side_effect = lambda device: order.append(('open-out', device))
+        mic.close.side_effect = lambda: order.append('close-mic')
+        e = engine(lock=threading.RLock(), audio=audio, mic_stream=mic, meta={},
+                   device_index=Mock(return_value=None),
+                   update_mic=Mock(side_effect=lambda: order.append('open-mic')))
+        with patch.object(t3_voice.sd, '_terminate', side_effect=lambda: order.append('terminate')),              patch.object(t3_voice.sd, '_initialize', side_effect=lambda: order.append('initialize')):
+            e.reroute()
+        self.assertEqual(['close-mic', 'close-out', 'terminate', 'initialize', ('open-out', None), 'open-mic'], order)
+        self.assertIsNone(e.mic_stream)
+        self.assertEqual(1, e.meta['audioReroutes'])
+
+    def test_reroute_falls_back_to_default_when_saved_speaker_fails(self):
+        audio = Mock()
+        audio.open_stream.side_effect = [RuntimeError('gone'), None]
+        e = engine(lock=threading.RLock(), audio=audio, mic_stream=None, meta={},
+                   device_index=Mock(return_value=5), update_mic=Mock())
+        with patch.object(t3_voice.sd, '_terminate'), patch.object(t3_voice.sd, '_initialize'):
+            e.reroute()
+        self.assertEqual([((5,),), ((None,),)], [tuple(c) [:1] for c in audio.open_stream.call_args_list])
+        self.assertEqual('RuntimeError', e.meta['speakerError'])
+        e.update_mic.assert_not_called()
+
+    def test_buffered_speech_survives_a_stream_reopen(self):
+        streams = []
+        def fake(**kwargs):
+            stream = Mock(); streams.append(stream); return stream
+        with patch.object(t3_voice.sd, 'RawOutputStream', side_effect=fake):
+            audio = t3_voice.ContinuousAudio()
+            self.assertTrue(audio.put(bytes([1, 0]) * 100, audio.epoch, threading.Event()))
+            audio.close_stream()
+            audio.open_stream(3)
+        streams[0].abort.assert_called_once()
+        streams[0].close.assert_called_once()
+        streams[1].start.assert_called_once()
+        self.assertIs(audio.stream, streams[1])
+        self.assertEqual(200, audio.pending)
+
+
 class NativeDropdownTests(unittest.TestCase):
     def test_open_dropdown_suspends_card_dismissal_and_resets_leave_timer(self):
         e=engine(choosing_delivery=True,expanded=True,hwnd=123,expanded_at=0,

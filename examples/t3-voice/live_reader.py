@@ -41,9 +41,21 @@ class ContinuousAudio:
         self.level = 0.0
         self.spectrum = [0.0]*11
         self.paused = False      # muted: hold every buffered sample in place and play silence
-        self.stream = sd.RawOutputStream(samplerate=24000, channels=1, dtype='int16', device=device,
-                                         blocksize=480, latency='low', callback=self.callback)
-        self.stream.start()
+        self.stream = None
+        self.open_stream(device)
+
+    def open_stream(self, device=None):
+        """(Re)open the output on `device`; buffered speech carries on from where it was."""
+        stream = sd.RawOutputStream(samplerate=24000, channels=1, dtype='int16', device=device,
+                                    blocksize=480, latency='low', callback=self.callback)
+        stream.start()
+        self.stream = stream
+
+    def close_stream(self):
+        stream, self.stream = self.stream, None
+        if stream is not None:
+            stream.abort()
+            stream.close()
 
     def callback(self, output, frames, timing, status):
         target = memoryview(output).cast('B')
@@ -138,8 +150,7 @@ class ContinuousAudio:
 
     def close(self):
         self.reset()
-        self.stream.abort()
-        self.stream.close()
+        self.close_stream()
 
 
 class Reader:

@@ -1228,6 +1228,8 @@ class Engine:
                     else:  # summon the orb, or dismiss it if it was summoned
                         now = time.monotonic()
                         self.pin_until = 0.0 if now < self.pin_until else now + 6.0
+                elif kind == 'summon':     # tray icon: always bring the orb up, never dismiss it
+                    self.pin_until = time.monotonic() + 6.0
                 elif kind == 'speech-start':
                     if self.pending:
                         self.pending['deadline'] = None  # continuation may be coming; keep holding
@@ -1673,6 +1675,12 @@ class Engine:
                 set_hidden_region(hwnd, False)
         if getattr(self, 'endpoints', None):
             self.endpoints.stop()
+        if getattr(self, 'tray', None) is not None:
+            try:
+                self.tray.Visible = False          # otherwise a dead icon lingers until hovered
+                self.tray.Dispose()
+            except Exception:
+                pass
         self.stop()
         if self.mic_stream:
             self.mic_stream.abort()
@@ -1779,6 +1787,50 @@ class MARGINS(ctypes.Structure):
     _fields_ = [('left', ctypes.c_int), ('right', ctypes.c_int), ('top', ctypes.c_int), ('bottom', ctypes.c_int)]
 
 
+def orb_icon(size=64):
+    """The orb as a tray icon: a deep teal sphere with a soft upper-left highlight, drawn at start-up."""
+    from System.Drawing import Bitmap, Color, Graphics, Icon, PointF, RectangleF
+    from System.Drawing.Drawing2D import GraphicsPath, PathGradientBrush, SmoothingMode
+    from System import Array
+    bitmap = Bitmap(size, size)
+    g = Graphics.FromImage(bitmap)
+    g.SmoothingMode = SmoothingMode.AntiAlias
+    g.Clear(Color.Transparent)
+    pad = size * .06
+    disc = RectangleF(pad, pad, size - 2*pad, size - 2*pad)
+    path = GraphicsPath()
+    path.AddEllipse(disc)
+    brush = PathGradientBrush(path)
+    brush.CenterPoint = PointF(size * .38, size * .34)
+    brush.CenterColor = Color.FromArgb(255, 120, 214, 226)
+    brush.SurroundColors = Array[Color]([Color.FromArgb(255, 8, 40, 56)])
+    g.FillEllipse(brush, disc)
+    g.Dispose()
+    return Icon.FromHandle(bitmap.GetHicon())
+
+
+def add_tray(engine):
+    """Notification-area icon: click summons the orb; right-click offers Show and Quit. UI thread only."""
+    from System.Windows.Forms import ContextMenuStrip, MouseButtons, NotifyIcon
+    try:
+        tray = NotifyIcon()
+        tray.Icon = orb_icon()
+        tray.Text = 'Maeve'
+        menu = ContextMenuStrip()
+        menu.Items.Add('Show Maeve').Click += lambda *_: engine.notice.put(('summon', None))
+        menu.Items.Add('Quit').Click += lambda *_: engine.close()
+        tray.ContextMenuStrip = menu
+        def clicked(_, event):
+            if event.Button == MouseButtons.Left:
+                engine.notice.put(('summon', None))
+        tray.MouseClick += clicked
+        tray.Visible = True
+        return tray
+    except Exception as exc:
+        engine.meta['trayError'] = type(exc).__name__
+        return None
+
+
 def make_transparent(window, engine):
     """Per-pixel alpha: extend the DWM frame over the whole window and turn off the system backdrop.
 
@@ -1799,7 +1851,8 @@ def make_transparent(window, engine):
             no_border = ctypes.c_uint(0xFFFFFFFE)  # DWMWA_COLOR_NONE: no Windows 11 1 px frame border
             ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, 34, ctypes.byref(no_border), 4)
             # Layered (fully opaque alpha) so WS_EX_TRANSPARENT can make empty space click-through.
-            user32.SetWindowLongW(hwnd, -20, user32.GetWindowLongW(hwnd, -20) | 0x00080000)
+            # WS_EX_TOOLWINDOW, not WS_EX_APPWINDOW: no taskbar button; the tray icon stands in for it.
+            user32.SetWindowLongW(hwnd, -20, (user32.GetWindowLongW(hwnd, -20) | 0x00080000 | 0x80) & ~0x40000)
             user32.SetLayeredWindowAttributes(hwnd, 0, 255, 2)
             margins = MARGINS(-1, -1, -1, -1)
             ctypes.windll.dwmapi.DwmExtendFrameIntoClientArea(hwnd, ctypes.byref(margins))
@@ -1815,8 +1868,13 @@ def make_transparent(window, engine):
 
     def apply():
         glaze()
+        hwnd = form.Handle.ToInt32()
+        if user32.IsWindowVisible(hwnd):      # the taskbar re-reads the style only when the window is shown
+            user32.ShowWindow(hwnd, 0)
+            user32.ShowWindow(hwnd, 8)        # SW_SHOWNA: never steal focus
         engine.reglaze = reglaze
-        engine.attach(form.Handle.ToInt32())
+        engine.tray = add_tray(engine)
+        engine.attach(hwnd)
         try:
             from Microsoft.Win32 import SystemEvents
             SystemEvents.DisplaySettingsChanged += reglaze
